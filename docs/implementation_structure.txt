@@ -334,6 +334,7 @@ This module is a small wrapper for structured audit events.
 Responsibilities:
 
 - record security-relevant events
+- mirror high-signal events into a structured alert log
 - keep logging calls consistent across modules
 
 
@@ -420,6 +421,7 @@ The web folder contains the browser-based user interface.
 web/index.html
   Main browser layout. It contains the dashboard structure for:
   - register/login
+  - confirm-password registration
   - compose
   - search
   - groups
@@ -437,6 +439,7 @@ web/app.js
 
   - load health/domain status
   - register and login users
+  - validate confirm-password registration fields
   - save session state in localStorage
   - compute HMAC request signatures in the browser
   - refresh inbox/sent/drafts/todos
@@ -451,6 +454,8 @@ web/app.js
 Important design point:
   The web frontend is not a separate backend. It is only another client
   layer on top of the same secure API.
+  It also includes a basic duplicate-submit cooldown to reduce accidental
+  burst actions from the browser client.
 
 
 7. CONFIGURATION LAYER: configs/
@@ -519,6 +524,21 @@ docs/test_report.md
 docs/implementation_structure.txt
   This file. It explains how the implementation is organized.
 
+docs/assignment_coverage.md
+  Maps the assignment line-by-line to the implementation.
+
+docs/alerting_and_audit.md
+  Explains audit logging and anomaly alerting.
+
+docs/end_to_end_encryption_design.md
+  Records the future end-to-end encryption design direction.
+
+docs/malicious_mail_poc.md
+  Discusses malicious mail script risk and a safe PoC.
+
+docs/p2p_feasibility.md
+  Explores whether a P2P mail form is practical for this project.
+
 
 10. TEST LAYER: tests/
 ----------------------
@@ -529,12 +549,16 @@ tests/test_secure_mail.py
 The current suite covers:
 
 - login lockout
+- register confirmation mismatch rejection
 - web root serving
 - signed authenticated requests
 - replay rejection
 - invalid attachment rejection
 - cross-domain queued send
 - CC delivery across domains
+- suspicious-mail flagging
+- attachment deduplication
+- concurrent multi-client send and receive
 - recall
 - tampered quick-action token rejection
 - send rate limiting
@@ -616,6 +640,7 @@ The main security layers are:
 - image-only attachment allowlist with magic-byte validation
 - mailbox ownership checks
 - structured audit logging
+- structured anomaly alerting for high-signal security events
 
 
 13. CONCURRENCY STRUCTURE

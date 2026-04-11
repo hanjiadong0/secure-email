@@ -35,8 +35,8 @@ try {
 
 Push-Location $RepoRoot
 try {
-    Invoke-Step "Register Alice" @("-m", "client.cli", "--base-url", $baseA, "register", "--email", "alice@a.test", "--password", "demo123") -AllowFailure
-    Invoke-Step "Register Bob" @("-m", "client.cli", "--base-url", $baseB, "register", "--email", "bob@b.test", "--password", "demo123") -AllowFailure
+    Invoke-Step "Register Alice" @("-m", "client.cli", "--base-url", $baseA, "register", "--email", "alice@a.test", "--password", "demo123", "--confirm-password", "demo123") -AllowFailure
+    Invoke-Step "Register Bob" @("-m", "client.cli", "--base-url", $baseB, "register", "--email", "bob@b.test", "--password", "demo123", "--confirm-password", "demo123") -AllowFailure
     Invoke-Step "Login Alice" @("-m", "client.cli", "--base-url", $baseA, "login", "--email", "alice@a.test", "--password", "demo123")
     Invoke-Step "Login Bob" @("-m", "client.cli", "--base-url", $baseB, "login", "--email", "bob@b.test", "--password", "demo123")
     Invoke-Step "Send cross-domain mail" @("-m", "client.cli", "--base-url", $baseA, "send", "--email", "alice@a.test", "--to", "bob@b.test", "--subject", "Demo Mail", "--body", "Can we meet tomorrow?")

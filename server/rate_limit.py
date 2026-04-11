@@ -54,6 +54,13 @@ def _raise_limited(message: str, retry_after_seconds: int) -> None:
 def enforce_budget(ctx: AppContext, bucket: str, limit: int, window_seconds: int, amount: int = 1) -> None:
     current, oldest = _window_stats(ctx, bucket, window_seconds)
     if current + amount > limit:
+        event_type = "upload_rate_limited" if bucket.startswith("upload-bytes:") else "send_rate_limited"
+        ctx.audit(event_type, details={"bucket": bucket, "limit": limit, "window_seconds": window_seconds, "amount": amount})
+        ctx.alert(
+            event_type,
+            severity="warning",
+            details={"bucket": bucket, "limit": limit, "window_seconds": window_seconds, "amount": amount},
+        )
         _raise_limited("Rate limit exceeded.", _retry_after(oldest, window_seconds))
     _record_event(ctx, bucket, amount)
 
@@ -68,6 +75,13 @@ def check_login_lockout(ctx: AppContext, email: str, ip_address: str) -> None:
     locked_until = row["until_at"] if row else None
     if locked_until and parse_timestamp(locked_until) > utcnow():
         retry_after_seconds = int((parse_timestamp(locked_until) - utcnow()).total_seconds())
+        ctx.audit("login_rate_limited", details={"email": email, "ip_address": ip_address, "retry_after": retry_after_seconds})
+        ctx.alert(
+            "login_rate_limited",
+            actor_email=email,
+            severity="warning",
+            details={"ip_address": ip_address, "retry_after": retry_after_seconds},
+        )
         _raise_limited("Account temporarily locked.", max(1, retry_after_seconds))
 
 
@@ -115,4 +129,3 @@ def enforce_upload_limits(ctx: AppContext, email: str, size_bytes: int) -> None:
         60,
         amount=size_bytes,
     )
-

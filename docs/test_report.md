@@ -45,24 +45,27 @@ Command used:
 Result:
 
 ```text
-7 passed, 1 warning in 4.38s
+11 passed in 9.93s
 ```
 
 Covered by the current automated suite:
 
 - login lockout after repeated bad passwords
+- register confirmation mismatch rejection
 - browser web root/static asset serving
 - signed authenticated requests
 - replay rejection on duplicate signed request
 - invalid attachment rejection
 - cross-domain queued send with worker-backed relay delivery
 - CC delivery across local and remote recipients
+- suspicious-mail/phishing flagging
+- attachment deduplication behavior
+- concurrent multi-client send and receive acceptance
 - recall on unread cross-domain mail
 - tampered quick-action token rejection
 - send rate limiting
 
 Known gaps still worth extending:
 
-- stronger concurrency stress verification is still script-based rather than fully asserted in pytest
 - TLS certificate handling is demo-oriented and not yet covered by automated tests
-- pytest still emits one local cache warning on this machine, but the test outcomes are passing
+- larger-scale performance benchmarking is still better handled by the stress script than by unit tests

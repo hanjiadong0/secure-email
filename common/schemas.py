@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class RegisterRequest(BaseModel):
     email: str
     password: str
+    confirm_password: str | None = None
 
 
 class LoginRequest(BaseModel):

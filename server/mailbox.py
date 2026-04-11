@@ -148,6 +148,16 @@ def store_mail_copy(
         security_flags = analyze_message(from_email, subject, body_text)
         if security_flags.get("suspicious"):
             classification = "Suspicious"
+            if folder == "inbox":
+                log_event(
+                    ctx,
+                    "suspicious_mail_detected",
+                    actor_email=from_email,
+                    owner_email=owner_email,
+                    message_id=message_id,
+                    score=security_flags.get("phishing_score", 0),
+                    reasons=security_flags.get("reasons", []),
+                )
         quick_replies = quick_reply_suggestions(subject, body_text) if folder == "inbox" else []
         actions = _build_actions(ctx, message_id, owner_email, subject) if folder == "inbox" and not recalled else []
         existing = conn.execute(

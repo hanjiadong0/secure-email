@@ -10,6 +10,7 @@ Primary assets:
 - attachment blobs
 - relay trust boundary
 - audit logs
+- anomaly alerts
 
 ## Trust Boundaries
 
@@ -107,6 +108,7 @@ Mitigations:
 - bounded context
 - no privileged autonomous execution
 - server-side validation on all state-changing actions
+- escaped browser-side mail rendering for message text
 
 ## Residual Risk
 
@@ -117,4 +119,3 @@ This repo is a security-conscious prototype, not a production mail platform. Res
 - advanced phishing / malware controls
 - full queue reliability and recovery
 - stronger privacy / retention controls
-

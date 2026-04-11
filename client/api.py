@@ -55,8 +55,11 @@ class ApiClient:
     def close(self) -> None:
         self.client.close()
 
-    def register(self, email: str, password: str) -> dict[str, Any]:
-        response = self.client.post("/v1/auth/register", json={"email": email, "password": password})
+    def register(self, email: str, password: str, confirm_password: str | None = None) -> dict[str, Any]:
+        response = self.client.post(
+            "/v1/auth/register",
+            json={"email": email, "password": password, "confirm_password": confirm_password or password},
+        )
         response.raise_for_status()
         return response.json()
 
@@ -213,4 +216,3 @@ class ApiClient:
 
     def autocomplete(self, query: str) -> Any:
         return self._get("/v1/contacts/autocomplete", params={"q": query})
-

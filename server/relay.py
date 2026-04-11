@@ -41,6 +41,7 @@ def _verify_relay_request(
         }
     )
     if mac_hex(ctx.config.relay_secret, canonical) != relay_mac:
+        log_event(ctx, "relay_mac_failed", actor_email=source_domain, path=path)
         raise HTTPException(status_code=401, detail="Relay MAC validation failed.")
     with ctx.connect() as conn:
         cutoff = isoformat_utc(utcnow() - timedelta(hours=1))
@@ -50,6 +51,7 @@ def _verify_relay_request(
             (source_domain, nonce),
         ).fetchone()
         if duplicate is not None:
+            log_event(ctx, "relay_replay_rejected", actor_email=source_domain, path=path, reason="duplicate_nonce")
             raise HTTPException(status_code=409, detail="Duplicate relay request detected.")
         conn.execute(
             "INSERT INTO relay_guards(source_domain, nonce, created_at) VALUES (?, ?, ?)",

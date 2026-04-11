@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import base64
-import uuid
+import concurrent.futures
 import shutil
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -158,6 +159,16 @@ def test_login_lockout(app_pair):
     assert "Retry-After" in locked.headers
 
 
+def test_register_requires_matching_confirmation(app_pair):
+    client_a, _ = app_pair
+    response = client_a.post(
+        "/v1/auth/register",
+        json={"email": "alice@a.test", "password": "demo123", "confirm_password": "different"},
+    )
+    assert response.status_code == 400
+    assert "confirmation" in response.json()["detail"].lower()
+
+
 def test_web_root_is_served(app_pair):
     client_a, _ = app_pair
     index = client_a.get("/")
@@ -225,6 +236,60 @@ def test_cross_domain_send_attachment_recall_and_tamper(app_pair):
     assert inbox_after.json()[0]["recalled"] is True
 
 
+def test_phishing_sample_is_flagged(app_pair):
+    client_a, client_b = app_pair
+    _register(client_a, "alice@a.test")
+    _register(client_b, "bob@b.test")
+    alice = _login(client_a, "alice@a.test")
+    bob = _login(client_b, "bob@b.test")
+
+    send_body = {
+        "to": ["bob@b.test"],
+        "cc": [],
+        "subject": "Urgent: verify your account and payment details",
+        "body_text": (
+            "Please verify your password immediately and click both links now: "
+            "https://secure-check.example/reset and https://billing-check.example/pay"
+        ),
+        "attachment_ids": [],
+        "thread_id": None,
+    }
+    send = client_a.post("/v1/mail/send", json=send_body, headers=_signed_headers(alice, "/v1/mail/send", send_body))
+    assert send.status_code == 200
+    message_id = send.json()["message_id"]
+    _wait_for_message(client_a, message_id)
+    _wait_for_message(client_b, message_id)
+
+    inbox = client_b.get("/v1/mail/inbox", headers={"Authorization": f"Bearer {bob['session_token']}"})
+    assert inbox.status_code == 200
+    message = next(item for item in inbox.json() if item["message_id"] == message_id)
+    assert message["security_flags"]["suspicious"] is True
+    assert message["classification"] == "Suspicious"
+
+
+def test_attachment_dedup_reuses_single_blob(app_pair):
+    client_a, _ = app_pair
+    _register(client_a, "alice@a.test")
+    alice = _login(client_a, "alice@a.test")
+
+    upload_body = {
+        "filename": "pixel.png",
+        "content_base64": base64.b64encode(PNG_BYTES).decode("ascii"),
+    }
+    first = client_a.post("/v1/attachments/upload", json=upload_body, headers=_signed_headers(alice, "/v1/attachments/upload", upload_body))
+    assert first.status_code == 200
+    second = client_a.post("/v1/attachments/upload", json=upload_body, headers=_signed_headers(alice, "/v1/attachments/upload", upload_body))
+    assert second.status_code == 200
+    assert first.json()["id"] != second.json()["id"]
+
+    with client_a.app.state.ctx.connect() as conn:
+        blobs = conn.execute("SELECT blob_key, ref_count FROM attachment_blobs").fetchall()
+        attachments = conn.execute("SELECT COUNT(*) AS total FROM attachments").fetchone()
+    assert len(blobs) == 1
+    assert blobs[0]["ref_count"] == 2
+    assert attachments["total"] == 2
+
+
 def test_cc_recipients_are_delivered(app_pair):
     client_a, client_b = app_pair
     _register(client_a, "alice@a.test")
@@ -256,6 +321,55 @@ def test_cc_recipients_are_delivered(app_pair):
     assert carol_inbox.status_code == 200
     assert carol_inbox.json()[0]["message_id"] == message_id
     assert carol_inbox.json()[0]["cc"] == ["carol@a.test"]
+
+
+def test_concurrent_multi_client_send_and_receive(app_pair):
+    client_a, client_b = app_pair
+    _register(client_b, "bob@b.test")
+    bob = _login(client_b, "bob@b.test")
+    bob_headers = {"Authorization": f"Bearer {bob['session_token']}"}
+    sender_count = 8
+
+    def sender_task(index: int) -> str:
+        email = f"load{index}@a.test"
+        _register(client_a, email)
+        session = _login(client_a, email)
+        body = {
+            "to": ["bob@b.test"],
+            "cc": [],
+            "subject": f"Concurrent {index}",
+            "body_text": f"Message {index}",
+            "attachment_ids": [],
+            "thread_id": None,
+        }
+        response = client_a.post("/v1/mail/send", json=body, headers=_signed_headers(session, "/v1/mail/send", body))
+        assert response.status_code == 200
+        return response.json()["message_id"]
+
+    def inbox_poller() -> list[int]:
+        counts: list[int] = []
+        for _ in range(10):
+            response = client_b.get("/v1/mail/inbox", headers=bob_headers)
+            assert response.status_code == 200
+            counts.append(len(response.json()))
+            time.sleep(0.05)
+        return counts
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=sender_count + 1) as pool:
+        poll_future = pool.submit(inbox_poller)
+        sender_futures = [pool.submit(sender_task, index) for index in range(sender_count)]
+        message_ids = [future.result() for future in sender_futures]
+        poll_counts = poll_future.result()
+
+    for message_id in message_ids:
+        _wait_for_message(client_a, message_id)
+        _wait_for_message(client_b, message_id)
+
+    inbox = client_b.get("/v1/mail/inbox", headers=bob_headers)
+    assert inbox.status_code == 200
+    delivered_ids = {item["message_id"] for item in inbox.json()}
+    assert set(message_ids).issubset(delivered_ids)
+    assert max(poll_counts) >= 0
 
 
 def test_replay_rejected(app_pair):

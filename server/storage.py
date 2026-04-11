@@ -175,6 +175,7 @@ class AppContext:
     relay_dispatch: RelayDispatch | None = None
     db_path: Path = field(init=False)
     log_path: Path = field(init=False)
+    alert_path: Path = field(init=False)
     stop_event: threading.Event = field(init=False, repr=False)
     worker_threads: list[threading.Thread] = field(init=False, repr=False)
     workers_started: bool = field(init=False, default=False)
@@ -183,6 +184,7 @@ class AppContext:
         self.config.ensure_layout()
         self.db_path = self.config.data_root / "mail" / "mailstore.sqlite3"
         self.log_path = self.config.data_root / "logs" / "security.jsonl"
+        self.alert_path = self.config.data_root / "logs" / "alerts.jsonl"
         self.stop_event = threading.Event()
         self.worker_threads = []
         self._init_db()
@@ -389,4 +391,22 @@ class AppContext:
             "created_at": isoformat_utc(),
         }
         with self.log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=True, sort_keys=True) + "\n")
+
+    def alert(
+        self,
+        alert_type: str,
+        *,
+        actor_email: str | None = None,
+        severity: str = "warning",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        entry = {
+            "alert_type": alert_type,
+            "severity": severity,
+            "actor_email": actor_email,
+            "details": details or {},
+            "created_at": isoformat_utc(),
+        }
+        with self.alert_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=True, sort_keys=True) + "\n")

@@ -21,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     reg = sub.add_parser("register")
     reg.add_argument("--email", required=True)
     reg.add_argument("--password", required=True)
+    reg.add_argument("--confirm-password", required=True)
 
     login = sub.add_parser("login")
     login.add_argument("--email", required=True)
@@ -108,7 +109,7 @@ def main() -> None:
     client = ApiClient(args.base_url, getattr(args, "email", None) if args.command not in {"register", "login"} else None)
     try:
         if args.command == "register":
-            print_json_block(client.register(args.email, args.password))
+            print_json_block(client.register(args.email, args.password, args.confirm_password))
         elif args.command == "login":
             print_json_block(client.login(args.email, args.password))
         elif args.command == "upload":

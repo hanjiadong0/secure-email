@@ -18,6 +18,9 @@ const state = {
 };
 
 const ui = {};
+const actionLocks = new Set();
+const actionCooldowns = new Map();
+const CLIENT_ACTION_COOLDOWN_MS = 900;
 
 document.addEventListener("DOMContentLoaded", () => {
   void initialize();
@@ -48,6 +51,7 @@ function cacheUi() {
   ui.loginForm = document.getElementById("loginForm");
   ui.registerEmail = document.getElementById("registerEmail");
   ui.registerPassword = document.getElementById("registerPassword");
+  ui.registerConfirmPassword = document.getElementById("registerConfirmPassword");
   ui.loginEmail = document.getElementById("loginEmail");
   ui.loginPassword = document.getElementById("loginPassword");
   ui.composeForm = document.getElementById("composeForm");
@@ -184,21 +188,24 @@ function syncSessionCard() {
 async function handleRegister() {
   const email = ui.registerEmail.value.trim();
   const password = ui.registerPassword.value;
-  if (!email || !password) {
-    showToast("Registration needs both email and password.", true);
+  const confirmPassword = ui.registerConfirmPassword.value;
+  if (!email || !password || !confirmPassword) {
+    showToast("Registration needs email, password, and confirm password.", true);
     return;
   }
-  try {
+  if (password !== confirmPassword) {
+    showToast("Password confirmation does not match.", true);
+    return;
+  }
+  await runClientGuard("register", async () => {
     const result = await fetchJson("/v1/auth/register", {
       method: "POST",
-      body: { email, password },
+      body: { email, password, confirm_password: confirmPassword },
     });
     ui.loginEmail.value = email;
     ui.registerForm.reset();
     showToast(`Registered ${result.email}. You can log in now.`);
-  } catch (error) {
-    showToast(normalizeError(error), true);
-  }
+  });
 }
 
 async function handleLogin() {
@@ -208,7 +215,7 @@ async function handleLogin() {
     showToast("Login needs both email and password.", true);
     return;
   }
-  try {
+  await runClientGuard("login", async () => {
     const data = await fetchJson("/v1/auth/login", {
       method: "POST",
       body: { email, password },
@@ -226,9 +233,7 @@ async function handleLogin() {
     state.activeMailbox = "inbox";
     await refreshAll();
     showToast(`Logged in as ${email}.`);
-  } catch (error) {
-    showToast(normalizeError(error), true);
-  }
+  });
 }
 
 function handleLogout() {
@@ -286,15 +291,13 @@ async function handleUploadAttachment() {
   }
   const contentBase64 = await fileToBase64(file);
   const body = { filename: file.name, content_base64: contentBase64 };
-  try {
+  await runClientGuard("upload", async () => {
     const attachment = await signedPost("/v1/attachments/upload", body);
     state.composeAttachments.push(attachment);
     renderAttachments();
     ui.attachmentFile.value = "";
     showToast(`Uploaded ${attachment.filename}.`);
-  } catch (error) {
-    showToast(normalizeError(error), true);
-  }
+  });
 }
 
 async function handleSendMail() {
@@ -302,7 +305,7 @@ async function handleSendMail() {
     return;
   }
   const body = buildComposeBody();
-  try {
+  await runClientGuard("send_mail", async () => {
     const result = await signedPost("/v1/mail/send", body);
     clearCompose();
     await refreshAll();
@@ -312,9 +315,7 @@ async function handleSendMail() {
     renderMailboxList();
     renderDetail();
     showToast(`Mail queued with id ${result.message_id}.`);
-  } catch (error) {
-    showToast(normalizeError(error), true);
-  }
+  });
 }
 
 async function handleSaveDraft() {
@@ -322,7 +323,7 @@ async function handleSaveDraft() {
     return;
   }
   const body = { ...buildComposeBody(), message_id: null, send_now: false };
-  try {
+  await runClientGuard("save_draft", async () => {
     const result = await signedPost("/v1/mail/draft", body);
     await refreshAll();
     state.activeMailbox = "drafts";
@@ -331,9 +332,7 @@ async function handleSaveDraft() {
     renderMailboxList();
     renderDetail();
     showToast(`Draft saved with id ${result.message_id}.`);
-  } catch (error) {
-    showToast(normalizeError(error), true);
-  }
+  });
 }
 
 function clearCompose() {
@@ -387,13 +386,11 @@ async function handleGroupCreate() {
     showToast("Group name is required.", true);
     return;
   }
-  try {
+  await runClientGuard("group_create", async () => {
     await signedPost("/v1/groups/create", { name, members });
     ui.groupCreateForm.reset();
     showToast(`Saved group ${name}.`);
-  } catch (error) {
-    showToast(normalizeError(error), true);
-  }
+  });
 }
 
 async function handleGroupSend() {
@@ -410,14 +407,12 @@ async function handleGroupSend() {
     showToast("Group send needs name, subject, and body.", true);
     return;
   }
-  try {
+  await runClientGuard("group_send", async () => {
     await signedPost("/v1/mail/send_group", body);
     ui.groupSendForm.reset();
     await refreshAll();
     showToast(`Sent mail to group ${body.group_name}.`);
-  } catch (error) {
-    showToast(normalizeError(error), true);
-  }
+  });
 }
 
 async function handleDetailAction(node) {
@@ -431,36 +426,44 @@ async function handleDetailAction(node) {
   const action = node.dataset.detailAction;
   try {
     if (action === "mark-read") {
-      await signedPost(`/v1/mail/mark_read/${message.message_id}`, { message_id: message.message_id });
-      await refreshAll();
-      showToast("Message marked as read.");
+      await runClientGuard("mark_read", async () => {
+        await signedPost(`/v1/mail/mark_read/${message.message_id}`, { message_id: message.message_id });
+        await refreshAll();
+        showToast("Message marked as read.");
+      });
       return;
     }
     if (action === "recall") {
-      const result = await signedPost("/v1/mail/recall", { message_id: message.message_id });
-      await refreshAll();
-      showToast(`Recall result: ${JSON.stringify(result.statuses)}`);
+      await runClientGuard("recall", async () => {
+        const result = await signedPost("/v1/mail/recall", { message_id: message.message_id });
+        await refreshAll();
+        showToast(`Recall result: ${JSON.stringify(result.statuses)}`);
+      });
       return;
     }
     if (action === "quick-reply") {
       const replyText = node.dataset.replyText || "Received, thank you.";
-      await signedPost("/v1/mail/send", {
-        to: [message.from_email],
-        cc: [],
-        subject: `Re: ${message.subject}`,
-        body_text: replyText,
-        attachment_ids: [],
-        thread_id: message.thread_id,
+      await runClientGuard("quick_reply", async () => {
+        await signedPost("/v1/mail/send", {
+          to: [message.from_email],
+          cc: [],
+          subject: `Re: ${message.subject}`,
+          body_text: replyText,
+          attachment_ids: [],
+          thread_id: message.thread_id,
+        });
+        await refreshAll();
+        showToast("Quick reply sent.");
       });
-      await refreshAll();
-      showToast("Quick reply sent.");
       return;
     }
     if (action === "execute-token") {
       const token = node.dataset.token;
-      await signedPost("/v1/actions/execute", { token });
-      await refreshAll();
-      showToast("Quick action executed.");
+      await runClientGuard("execute_action", async () => {
+        await signedPost("/v1/actions/execute", { token });
+        await refreshAll();
+        showToast("Quick action executed.");
+      });
       return;
     }
     if (action === "load-draft") {
@@ -772,6 +775,30 @@ function requireSession() {
   }
   showToast("Log in first to use authenticated mail features.", true);
   return false;
+}
+
+async function runClientGuard(key, action) {
+  const now = Date.now();
+  const lastRun = actionCooldowns.get(key) || 0;
+  if (actionLocks.has(key)) {
+    showToast("This action is already running.", true);
+    return null;
+  }
+  if (now - lastRun < CLIENT_ACTION_COOLDOWN_MS) {
+    showToast("Please slow down and wait a moment before repeating that action.", true);
+    return null;
+  }
+  actionLocks.add(key);
+  try {
+    const result = await action();
+    actionCooldowns.set(key, Date.now());
+    return result;
+  } catch (error) {
+    showToast(normalizeError(error), true);
+    return null;
+  } finally {
+    actionLocks.delete(key);
+  }
 }
 
 async function authGet(path, params = null) {

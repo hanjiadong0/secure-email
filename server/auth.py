@@ -98,6 +98,7 @@ def verify_authenticated_request(
     )
     expected = mac_hex(user["session_key"], canonical)
     if expected != body_mac:
+        log_event(ctx, "request_mac_failed", actor_email=user["email"], path=request.url.path)
         raise HTTPException(status_code=401, detail="Request MAC validation failed.")
     with ctx.connect() as conn:
         row = conn.execute(
@@ -106,12 +107,14 @@ def verify_authenticated_request(
         ).fetchone()
         current_seq = int(row["last_seq_no"]) if row else 0
         if seq_no <= current_seq:
+            log_event(ctx, "request_replay_rejected", actor_email=user["email"], path=request.url.path, reason="sequence")
             raise HTTPException(status_code=409, detail="Sequence replay detected.")
         duplicate = conn.execute(
             "SELECT 1 FROM request_guards WHERE session_token = ? AND (request_id = ? OR nonce = ?) LIMIT 1",
             (user["token"], request_id, nonce),
         ).fetchone()
         if duplicate is not None:
+            log_event(ctx, "request_replay_rejected", actor_email=user["email"], path=request.url.path, reason="duplicate_request")
             raise HTTPException(status_code=409, detail="Duplicate or replayed request detected.")
         cutoff = isoformat_utc(utcnow() - timedelta(hours=1))
         conn.execute("DELETE FROM request_guards WHERE created_at < ?", (cutoff,))
@@ -132,6 +135,8 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
         email = normalize_email(payload.email)
         if "@" not in email or email_domain(email) != ctx.config.domain:
             raise HTTPException(status_code=400, detail=f"Email must belong to {ctx.config.domain}.")
+        if payload.confirm_password is not None and payload.password != payload.confirm_password:
+            raise HTTPException(status_code=400, detail="Password confirmation does not match.")
         with ctx.connect() as conn:
             existing = conn.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone()
             if existing:
@@ -153,6 +158,7 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
             retry_after = record_login_failure(ctx, email, ip_address)
             log_event(ctx, "login_failed", actor_email=email, ip=ip_address)
             if retry_after is not None:
+                log_event(ctx, "login_lockout", actor_email=email, ip=ip_address, retry_after=retry_after)
                 raise HTTPException(
                     status_code=429,
                     detail="Account temporarily locked.",
