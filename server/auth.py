@@ -52,7 +52,7 @@ def get_current_user(ctx: AppContext, authorization: str | None) -> dict[str, st
         "email": row["email"],
         "token": token,
         "session_id": token,
-        "session_key": row["session_key"],
+        "session_key": ctx.decrypt_text(row["session_key"]),
         "last_seq_no": str(row["last_seq_no"]),
     }
 
@@ -173,7 +173,7 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
             conn.execute(
                 "INSERT INTO sessions(token, user_id, session_key, expires_at, created_at, last_seen, last_seq_no) "
                 "VALUES (?, ?, ?, ?, ?, ?, 0)",
-                (token, user["id"], session_key, expires_at, isoformat_utc(), isoformat_utc()),
+                (token, user["id"], ctx.encrypt_text(session_key), expires_at, isoformat_utc(), isoformat_utc()),
             )
         log_event(ctx, "login_success", actor_email=email, ip=ip_address)
         return AuthResponse(

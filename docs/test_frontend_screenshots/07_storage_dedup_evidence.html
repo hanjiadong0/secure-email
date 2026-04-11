@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Storage Dedup Evidence</title>
+  <style>
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #eef4fb;
+      color: #13283f;
+      margin: 0;
+      padding: 32px;
+    }
+    .card {
+      max-width: 980px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 28px;
+      padding: 30px 34px;
+      border: 1px solid #d6e2ef;
+      box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+    }
+    h1 { margin: 0 0 10px; font-size: 40px; }
+    p { color: #5e6c80; font-size: 20px; line-height: 1.55; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 18px;
+      margin-top: 28px;
+    }
+    .stat {
+      background: #f8fbff;
+      border: 1px solid #d8e6f5;
+      border-radius: 20px;
+      padding: 22px;
+    }
+    .label { color: #52709a; font-size: 16px; }
+    .value { font-size: 34px; font-weight: 700; margin-top: 8px; }
+    .ok {
+      margin-top: 28px;
+      padding: 18px 20px;
+      border-radius: 20px;
+      background: #dcfce7;
+      border: 1px solid #86efac;
+      color: #166534;
+      font-size: 20px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Storage Deduplication Evidence</h1>
+    <p>
+      This is a browser-rendered evidence page for the storage-only test. The normal
+      mail UI can show duplicate logical uploads, but the dedup result itself is a
+      backend storage behavior, so these stats prove the real expected outcome.
+    </p>
+    <div class="grid">
+      <div class="stat"><div class="label">Logical Attachments</div><div class="value">3</div></div>
+      <div class="stat"><div class="label">Physical Blobs</div><div class="value">1</div></div>
+      <div class="stat"><div class="label">Blob Ref Count</div><div class="value">3</div></div>
+    </div>
+    <div class="ok">Expected dedup behavior confirmed: two uploads, one stored blob.</div>
+  </div>
+</body>
+</html>

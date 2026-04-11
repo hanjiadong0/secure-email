@@ -26,6 +26,17 @@ class DomainConfig:
     max_attachment_bytes: int = 5 * 1024 * 1024
     action_secret: str = "change-me-for-demo"
     relay_secret: str = "change-me-relay-secret"
+    data_encryption_key: str | None = None
+    smart_backend: str = "heuristic"
+    smart_local_only: bool = True
+    smart_prompt_max_chars: int = 3200
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_model: str | None = None
+    ollama_vision_model: str | None = None
+    ollama_timeout_seconds: float = 6.0
+    hf_text_model: str | None = None
+    hf_vision_model: str | None = None
+    hf_device: str = "cpu"
     ssl_certfile: str | None = None
     ssl_keyfile: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
@@ -53,6 +64,17 @@ class DomainConfig:
             "max_attachment_bytes",
             "action_secret",
             "relay_secret",
+            "data_encryption_key",
+            "smart_backend",
+            "smart_local_only",
+            "smart_prompt_max_chars",
+            "ollama_base_url",
+            "ollama_model",
+            "ollama_vision_model",
+            "ollama_timeout_seconds",
+            "hf_text_model",
+            "hf_vision_model",
+            "hf_device",
             "ssl_certfile",
             "ssl_keyfile",
         }
@@ -75,6 +97,17 @@ class DomainConfig:
             max_attachment_bytes=int(raw.get("max_attachment_bytes", 5 * 1024 * 1024)),
             action_secret=str(raw.get("action_secret", "change-me-for-demo")),
             relay_secret=str(raw.get("relay_secret", "change-me-relay-secret")),
+            data_encryption_key=raw.get("data_encryption_key"),
+            smart_backend=str(raw.get("smart_backend", "heuristic")),
+            smart_local_only=bool(raw.get("smart_local_only", True)),
+            smart_prompt_max_chars=int(raw.get("smart_prompt_max_chars", 3200)),
+            ollama_base_url=str(raw.get("ollama_base_url", "http://127.0.0.1:11434")),
+            ollama_model=raw.get("ollama_model"),
+            ollama_vision_model=raw.get("ollama_vision_model"),
+            ollama_timeout_seconds=float(raw.get("ollama_timeout_seconds", 6.0)),
+            hf_text_model=raw.get("hf_text_model"),
+            hf_vision_model=raw.get("hf_vision_model"),
+            hf_device=str(raw.get("hf_device", "cpu")),
             ssl_certfile=raw.get("ssl_certfile"),
             ssl_keyfile=raw.get("ssl_keyfile"),
             extra=extra,

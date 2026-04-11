@@ -135,7 +135,8 @@ Requirement:
 - At least 2 intelligent/algorithm-enhanced functions.
 
 Implemented by:
-- Keyword extraction
+- Local Ollama-backed smart analysis with heuristic fallback
+- Keyword extraction with stopword filtering
 - Mail classification
 - Fuzzy search
 - Quick reply suggestions
@@ -173,6 +174,7 @@ Requirement:
 
 Implemented by:
 - Argon2id password hashing in [common/crypto.py](../common/crypto.py)
+- Encrypted-at-rest session keys, mailbox fields, and queued job payloads via [common/data_security.py](../common/data_security.py) and [server/storage.py](../server/storage.py)
 
 Requirement:
 - Basic phishing / spam identification.

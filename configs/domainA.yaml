@@ -6,6 +6,16 @@ peer_domains:
   b.test: http://127.0.0.1:9443
 action_secret: dev-action-secret
 relay_secret: dev-relay-secret
+smart_backend: ollama
+smart_local_only: true
+smart_prompt_max_chars: 3200
+ollama_base_url: http://127.0.0.1:11434
+ollama_model: llama3.2:latest
+ollama_vision_model:
+ollama_timeout_seconds: 6.0
+hf_text_model:
+hf_vision_model:
+hf_device: cpu
 session_ttl_minutes: 30
 recall_window_minutes: 5
 login_max_attempts: 5
@@ -13,4 +23,3 @@ lockout_seconds: 300
 send_rate_limit_per_minute: 30
 upload_rate_limit_bytes_per_minute: 15728640
 max_attachment_bytes: 5242880
-

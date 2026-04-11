@@ -35,6 +35,18 @@ class AttachmentMeta(BaseModel):
     content_type: str
     size_bytes: int
     sha256: str
+    analysis: dict[str, Any] = Field(default_factory=dict)
+
+
+class AttachmentAnalysisResponse(BaseModel):
+    attachment_id: str
+    filename: str
+    content_type: str
+    analysis: dict[str, Any] = Field(default_factory=dict)
+
+
+class AttachmentTransformRequest(BaseModel):
+    mode: str
 
 
 class QuickAction(BaseModel):

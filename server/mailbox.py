@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import json
 from collections import defaultdict
 from datetime import timedelta
 from typing import Any
@@ -22,13 +20,13 @@ from common.schemas import (
     SendMailRequest,
     TodoItem,
 )
-from common.text_features import classify_message, extract_keywords, fuzzy_score, quick_reply_suggestions
-from common.utils import email_domain, isoformat_utc, json_dumps, new_id, normalize_email, parse_timestamp, utcnow
+from common.text_features import fuzzy_score
+from common.utils import email_domain, isoformat_utc, new_id, normalize_email, parse_timestamp, utcnow
 from server.attachments import export_attachment_payloads, load_attachment_metas
 from server.auth import get_current_user, verify_authenticated_request
 from server.logging import log_event
-from server.phishing import analyze_message
 from server.rate_limit import enforce_send_limits
+from server.smart import analyze_message_features
 from server.storage import AppContext
 
 
@@ -84,24 +82,24 @@ def _build_actions(ctx: AppContext, message_id: str, recipient_email: str, subje
     return signed
 
 
-def _mail_row_to_summary(row) -> MailSummary:
+def _mail_row_to_summary(ctx: AppContext, row) -> MailSummary:
     return MailSummary(
         message_id=row["message_id"],
         thread_id=row["thread_id"],
         folder=row["folder"],
         delivery_state=row["delivery_state"],
-        from_email=row["from_email"],
-        to=json.loads(row["to_json"]),
-        cc=json.loads(row["cc_json"]),
-        subject=row["subject"],
-        body_text=row["body_text"],
+        from_email=ctx.decrypt_text(row["from_email"]),
+        to=ctx.decrypt_json(row["to_json"]) or [],
+        cc=ctx.decrypt_json(row["cc_json"]) or [],
+        subject=ctx.decrypt_text(row["subject"]),
+        body_text=ctx.decrypt_text(row["body_text"]),
         created_at=row["created_at"],
-        attachments=[AttachmentMeta(**item) for item in json.loads(row["attachments_json"])],
-        security_flags=json.loads(row["security_flags_json"]),
-        keywords=json.loads(row["keywords_json"]),
-        classification=row["classification"],
-        quick_replies=json.loads(row["quick_replies_json"]),
-        actions=json.loads(row["actions_json"]),
+        attachments=[AttachmentMeta(**item) for item in (ctx.decrypt_json(row["attachments_json"]) or [])],
+        security_flags=ctx.decrypt_json(row["security_flags_json"]) or {},
+        keywords=ctx.decrypt_json(row["keywords_json"]) or [],
+        classification=ctx.decrypt_text(row["classification"]) or "General",
+        quick_replies=ctx.decrypt_json(row["quick_replies_json"]) or [],
+        actions=ctx.decrypt_json(row["actions_json"]) or [],
         recalled=bool(row["recalled"]),
         recall_status=row["recall_status"],
         is_read=bool(row["is_read"]),
@@ -142,10 +140,17 @@ def store_mail_copy(
             "SELECT subject, body_text FROM mail_items WHERE owner_email = ? ORDER BY created_at DESC LIMIT 50",
             (owner_email,),
         ).fetchall()
-        corpus = [f"{row['subject']} {row['body_text']}" for row in corpus_rows]
-        keywords = extract_keywords(f"{subject} {body_text}", corpus)
-        classification = classify_message(keywords, subject, body_text)
-        security_flags = analyze_message(from_email, subject, body_text)
+        corpus = [f"{ctx.decrypt_text(row['subject'])} {ctx.decrypt_text(row['body_text'])}" for row in corpus_rows]
+        smart = analyze_message_features(
+            config=ctx.config,
+            sender_email=from_email,
+            subject=subject,
+            body_text=body_text,
+            corpus=corpus,
+        )
+        keywords = smart["keywords"]
+        classification = smart["classification"]
+        security_flags = smart["security_flags"]
         if security_flags.get("suspicious"):
             classification = "Suspicious"
             if folder == "inbox":
@@ -158,7 +163,7 @@ def store_mail_copy(
                     score=security_flags.get("phishing_score", 0),
                     reasons=security_flags.get("reasons", []),
                 )
-        quick_replies = quick_reply_suggestions(subject, body_text) if folder == "inbox" else []
+        quick_replies = smart["quick_replies"] if folder == "inbox" else []
         actions = _build_actions(ctx, message_id, owner_email, subject) if folder == "inbox" and not recalled else []
         existing = conn.execute(
             "SELECT mailbox_item_id FROM mail_items WHERE owner_email = ? AND folder = ? AND message_id = ?",
@@ -178,18 +183,18 @@ def store_mail_copy(
                     owner_email,
                     folder,
                     resolved_delivery_state,
-                    from_email,
-                    json_dumps(to),
-                    json_dumps(cc),
-                    subject,
-                    body_text,
-                    json_dumps(normalized_attachments),
+                    ctx.encrypt_text(from_email),
+                    ctx.encrypt_json(to),
+                    ctx.encrypt_json(cc),
+                    ctx.encrypt_text(subject),
+                    ctx.encrypt_text(body_text),
+                    ctx.encrypt_json(normalized_attachments),
                     created_at,
-                    json_dumps(security_flags),
-                    json_dumps(actions),
-                    json_dumps(quick_replies),
-                    json_dumps(keywords),
-                    classification,
+                    ctx.encrypt_json(security_flags),
+                    ctx.encrypt_json(actions),
+                    ctx.encrypt_json(quick_replies),
+                    ctx.encrypt_json(keywords),
+                    ctx.encrypt_text(classification),
                     int(recalled),
                     recall_status,
                     int(is_read),
@@ -203,18 +208,18 @@ def store_mail_copy(
                 (
                     thread_id,
                     resolved_delivery_state,
-                    from_email,
-                    json_dumps(to),
-                    json_dumps(cc),
-                    subject,
-                    body_text,
-                    json_dumps(normalized_attachments),
+                    ctx.encrypt_text(from_email),
+                    ctx.encrypt_json(to),
+                    ctx.encrypt_json(cc),
+                    ctx.encrypt_text(subject),
+                    ctx.encrypt_text(body_text),
+                    ctx.encrypt_json(normalized_attachments),
                     created_at,
-                    json_dumps(security_flags),
-                    json_dumps(actions),
-                    json_dumps(quick_replies),
-                    json_dumps(keywords),
-                    classification,
+                    ctx.encrypt_json(security_flags),
+                    ctx.encrypt_json(actions),
+                    ctx.encrypt_json(quick_replies),
+                    ctx.encrypt_json(keywords),
+                    ctx.encrypt_text(classification),
                     int(recalled),
                     recall_status,
                     int(is_read),
@@ -232,7 +237,7 @@ def store_mail_copy(
             "SELECT * FROM mail_items WHERE mailbox_item_id = ?",
             (mailbox_item_id,),
         ).fetchone()
-    return _mail_row_to_summary(row)
+    return _mail_row_to_summary(ctx, row)
 
 
 def _list_folder(ctx: AppContext, owner_email: str, folder: str) -> list[MailSummary]:
@@ -241,7 +246,7 @@ def _list_folder(ctx: AppContext, owner_email: str, folder: str) -> list[MailSum
             "SELECT * FROM mail_items WHERE owner_email = ? AND folder = ? ORDER BY created_at DESC",
             (owner_email, folder),
         ).fetchall()
-    return [_mail_row_to_summary(row) for row in rows]
+    return [_mail_row_to_summary(ctx, row) for row in rows]
 
 
 def _get_message(ctx: AppContext, owner_email: str, message_id: str) -> MailSummary:
@@ -252,7 +257,7 @@ def _get_message(ctx: AppContext, owner_email: str, message_id: str) -> MailSumm
         ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Message not found.")
-    return _mail_row_to_summary(row)
+    return _mail_row_to_summary(ctx, row)
 
 
 def refresh_sent_delivery_state(ctx: AppContext, owner_email: str, message_id: str) -> str:
@@ -299,7 +304,7 @@ def cancel_pending_delivery_jobs(
             (message_id, *job_types),
         ).fetchall()
         for row in rows:
-            payload = json.loads(row["payload_json"])
+            payload = ctx.decrypt_json(row["payload_json"]) or {}
             job_recipients = [item for item in payload.get("recipients", []) if item in recipient_set]
             if not job_recipients:
                 continue
@@ -308,7 +313,7 @@ def cancel_pending_delivery_jobs(
                 payload["recipients"] = remaining
                 conn.execute(
                     "UPDATE job_queue SET payload_json = ?, updated_at = ? WHERE job_id = ?",
-                    (json_dumps(payload), isoformat_utc(), row["job_id"]),
+                    (ctx.encrypt_json(payload), isoformat_utc(), row["job_id"]),
                 )
             else:
                 conn.execute(
@@ -343,7 +348,7 @@ def apply_recall(ctx: AppContext, message_id: str, recipients: list[str]) -> dic
                 continue
             conn.execute(
                 "UPDATE mail_items SET recalled = 1, recall_status = ?, actions_json = ? WHERE mailbox_item_id = ?",
-                ("recalled", "[]", row["mailbox_item_id"]),
+                ("recalled", ctx.encrypt_json([]), row["mailbox_item_id"]),
                 )
             statuses[row["owner_email"]] = "recalled"
     for recipient in recipients:
@@ -544,11 +549,11 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
                     "UPDATE mail_items SET to_json = ?, cc_json = ?, subject = ?, body_text = ?, attachments_json = ? "
                     "WHERE owner_email = ? AND message_id = ? AND folder = 'draft'",
                     (
-                        json_dumps(payload.to),
-                        json_dumps(payload.cc),
-                        payload.subject,
-                        payload.body_text,
-                        json_dumps([item.model_dump() for item in attachment_metas]),
+                        ctx.encrypt_json(payload.to),
+                        ctx.encrypt_json(payload.cc),
+                        ctx.encrypt_text(payload.subject),
+                        ctx.encrypt_text(payload.body_text),
+                        ctx.encrypt_json([item.model_dump() for item in attachment_metas]),
                         user["email"],
                         message_id,
                     ),
@@ -620,7 +625,7 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
             conn.execute(
                 "INSERT INTO groups_store(name, owner_email, members_json, created_at) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(name, owner_email) DO UPDATE SET members_json = excluded.members_json",
-                (payload.name, user["email"], json_dumps(sorted(set(members))), isoformat_utc()),
+                (payload.name, user["email"], ctx.encrypt_json(sorted(set(members))), isoformat_utc()),
             )
         return {"status": "group_saved", "name": payload.name, "members": sorted(set(members))}
 
@@ -634,10 +639,10 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
             ).fetchone()
             if row is None:
                 raise HTTPException(status_code=404, detail="Group not found.")
-            members = sorted(set(json.loads(row["members_json"]) + [normalize_email(payload.member_email)]))
+            members = sorted(set((ctx.decrypt_json(row["members_json"]) or []) + [normalize_email(payload.member_email)]))
             conn.execute(
                 "UPDATE groups_store SET members_json = ? WHERE name = ? AND owner_email = ?",
-                (json_dumps(members), payload.name, user["email"]),
+                (ctx.encrypt_json(members), payload.name, user["email"]),
             )
         return {"status": "group_updated", "name": payload.name, "members": members}
 
@@ -651,7 +656,7 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
             ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Group not found.")
-        members = json.loads(row["members_json"])
+        members = ctx.decrypt_json(row["members_json"]) or []
         enforce_send_limits(ctx, user["email"], _client_ip(request))
         return await dispatch_message(
             ctx,
@@ -687,7 +692,7 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
             with ctx.connect() as conn:
                 conn.execute(
                     "INSERT INTO todos(id, owner_email, message_id, title, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (todo.id, todo.owner_email, todo.message_id, todo.title, todo.created_at),
+                    (todo.id, todo.owner_email, todo.message_id, ctx.encrypt_text(todo.title), todo.created_at),
                 )
             log_event(ctx, "action_add_todo", actor_email=user["email"], message_id=data["message_id"])
             return {"status": "todo_added", "todo_id": todo.id}
@@ -707,7 +712,16 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
                 "SELECT id, owner_email, message_id, title, created_at FROM todos WHERE owner_email = ? ORDER BY created_at DESC",
                 (user["email"],),
             ).fetchall()
-        return [TodoItem(**dict(row)) for row in rows]
+        return [
+            TodoItem(
+                id=row["id"],
+                owner_email=row["owner_email"],
+                message_id=row["message_id"],
+                title=ctx.decrypt_text(row["title"]),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
 
     @app.get("/v1/mail/search", response_model=SearchResponse)
     def search(q: str, authorization: str | None = Header(default=None)) -> SearchResponse:
@@ -723,7 +737,7 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
             ).fetchall()
         scored_messages: list[tuple[float, MailSummary]] = []
         for row in message_rows:
-            summary = _mail_row_to_summary(row)
+            summary = _mail_row_to_summary(ctx, row)
             candidate = " ".join(
                 [
                     summary.subject,

@@ -45,6 +45,9 @@ Response:
 }
 ```
 
+The registration payload may also include `confirm_password`, and the server
+rejects mismatches.
+
 ## Authenticated Request Protection
 
 Authenticated state-changing requests include:
@@ -65,6 +68,9 @@ This protects against:
 - replay
 - duplicate submission
 - stale session action reuse
+
+The per-session `session_key` used for request MACs is encrypted at rest inside
+the local SQLite database rather than stored in plaintext.
 
 ## Mail Endpoints
 
@@ -133,6 +139,38 @@ Typical response:
 
 Only PNG and JPEG are accepted.
 
+Attachment metadata stays API-visible, but sensitive database fields and
+persistent queued job payloads are encrypted at rest before being written to the
+SQLite store.
+
+### Attachment Analysis
+
+`GET /v1/attachments/{attachment_id}/analysis`
+
+Returns locally generated metadata such as:
+
+- dimensions
+- analysis backend
+- risk score
+- labels
+- reasons
+
+### Attachment Transform
+
+`POST /v1/attachments/{attachment_id}/transform`
+
+```json
+{
+  "mode": "anime"
+}
+```
+
+Supported transform modes:
+
+- `anime`
+- `photo_boost`
+- `thumbnail`
+
 ## Relay Protocol
 
 Relay requests are sent to:
@@ -148,6 +186,33 @@ Relay security headers:
 - `X-Relay-Mac`
 
 The relay MAC is an HMAC over method, path, source domain, timestamp, nonce, and body.
+
+## Smart Module
+
+The default demo configs use a local Ollama runtime:
+
+- `smart_backend: ollama`
+- `smart_local_only: true`
+- `ollama_model: llama3.2:latest`
+- `ollama_base_url: http://127.0.0.1:11434`
+
+Optional local Hugging Face mode is also supported through:
+
+- `smart_backend: huggingface_local`
+- `hf_text_model: <local-or-cached-model>`
+- `hf_vision_model: <local-or-cached-model>`
+- `hf_device: cpu`
+
+The smart pipeline asks the local model for:
+
+- classification
+- keyword suggestions
+- quick replies
+- phishing hints
+- optional image labels for attachment analysis
+
+If the local model is unavailable or returns invalid output, the server falls
+back to the built-in heuristic engine.
 
 ## Mailbox States
 

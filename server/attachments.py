@@ -6,9 +6,15 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 
 from common.crypto import sha256_hex
-from common.schemas import AttachmentMeta, AttachmentUploadRequest
+from common.schemas import (
+    AttachmentAnalysisResponse,
+    AttachmentMeta,
+    AttachmentTransformRequest,
+    AttachmentUploadRequest,
+)
 from common.utils import ensure_directory, isoformat_utc, new_id
 from server.auth import get_current_user, verify_authenticated_request
+from server.image_ai import analyze_attachment_image, transform_attachment_image
 from server.logging import log_event
 from server.rate_limit import enforce_upload_limits
 from server.storage import AppContext
@@ -30,7 +36,46 @@ def _blob_path(ctx: AppContext, blob_key: str) -> Path:
     return bucket / f"{blob_key}.bin"
 
 
-def store_attachment_bytes(ctx: AppContext, owner_email: str, filename: str, data: bytes) -> AttachmentMeta:
+def _attachment_meta_from_row(ctx: AppContext, row) -> AttachmentMeta:
+    return AttachmentMeta(
+        id=row["id"],
+        filename=ctx.decrypt_text(row["filename"]),
+        content_type=row["content_type"],
+        size_bytes=row["size_bytes"],
+        sha256=row["sha256"],
+        analysis=ctx.decrypt_json(row["analysis_json"]) or {},
+    )
+
+
+def _resolve_attachment_row_for_user(ctx: AppContext, attachment_id: str, user_email: str):
+    with ctx.connect() as conn:
+        row = conn.execute(
+            "SELECT attachments.id, attachments.filename, attachments.content_type, attachments.size_bytes, attachments.sha256, "
+            "attachments.analysis_json, attachment_blobs.path "
+            "FROM attachments JOIN attachment_blobs ON attachment_blobs.blob_key = attachments.blob_key "
+            "WHERE attachments.id = ?",
+            (attachment_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Attachment not found.")
+        permitted = conn.execute(
+            "SELECT 1 FROM attachments WHERE id = ? AND created_by = ? "
+            "UNION SELECT 1 FROM mail_attachment_links WHERE attachment_id = ? AND owner_email = ? LIMIT 1",
+            (attachment_id, user_email, attachment_id, user_email),
+        ).fetchone()
+        if permitted is None:
+            raise HTTPException(status_code=403, detail="Attachment access denied.")
+    return row
+
+
+def store_attachment_bytes(
+    ctx: AppContext,
+    owner_email: str,
+    filename: str,
+    data: bytes,
+    *,
+    analysis: dict | None = None,
+) -> AttachmentMeta:
     suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Only PNG and JPEG attachments are allowed.")
@@ -39,6 +84,12 @@ def store_attachment_bytes(ctx: AppContext, owner_email: str, filename: str, dat
     content_type = _detect_content_type(data)
     if not content_type:
         raise HTTPException(status_code=400, detail="Attachment magic bytes do not match PNG/JPEG.")
+    resolved_analysis = analysis or analyze_attachment_image(
+        config=ctx.config,
+        filename=filename,
+        content_type=content_type,
+        data=data,
+    )
     blob_key = sha256_hex(data)
     path = _blob_path(ctx, blob_key)
     with ctx.connect() as conn:
@@ -59,9 +110,19 @@ def store_attachment_bytes(ctx: AppContext, owner_email: str, filename: str, dat
             )
         attachment_id = new_id()
         conn.execute(
-            "INSERT INTO attachments(id, blob_key, filename, content_type, size_bytes, sha256, created_by, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (attachment_id, blob_key, filename, content_type, len(data), blob_key, owner_email, isoformat_utc()),
+            "INSERT INTO attachments(id, blob_key, filename, content_type, size_bytes, sha256, analysis_json, created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                attachment_id,
+                blob_key,
+                ctx.encrypt_text(filename),
+                content_type,
+                len(data),
+                blob_key,
+                ctx.encrypt_json(resolved_analysis),
+                owner_email,
+                isoformat_utc(),
+            ),
         )
     return AttachmentMeta(
         id=attachment_id,
@@ -69,6 +130,7 @@ def store_attachment_bytes(ctx: AppContext, owner_email: str, filename: str, dat
         content_type=content_type,
         size_bytes=len(data),
         sha256=blob_key,
+        analysis=resolved_analysis,
     )
 
 
@@ -78,7 +140,7 @@ def load_attachment_metas(ctx: AppContext, attachment_ids: list[str], owner_emai
     placeholders = ",".join("?" for _ in attachment_ids)
     with ctx.connect() as conn:
         rows = conn.execute(
-            f"SELECT id, filename, content_type, size_bytes, sha256 FROM attachments "
+            f"SELECT id, filename, content_type, size_bytes, sha256, analysis_json FROM attachments "
             f"WHERE created_by = ? AND id IN ({placeholders})",
             [owner_email, *attachment_ids],
         ).fetchall()
@@ -86,16 +148,7 @@ def load_attachment_metas(ctx: AppContext, attachment_ids: list[str], owner_emai
     missing = [attachment_id for attachment_id in attachment_ids if attachment_id not in found]
     if missing:
         raise HTTPException(status_code=404, detail=f"Attachment(s) not found: {', '.join(missing)}")
-    return [
-        AttachmentMeta(
-            id=row["id"],
-            filename=row["filename"],
-            content_type=row["content_type"],
-            size_bytes=row["size_bytes"],
-            sha256=row["sha256"],
-        )
-        for row in rows
-    ]
+    return [_attachment_meta_from_row(ctx, row) for row in rows]
 
 
 def export_attachment_payloads(ctx: AppContext, attachment_ids: list[str], owner_email: str) -> tuple[list[AttachmentMeta], list[dict[str, str]]]:
@@ -146,25 +199,63 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
     @app.get("/v1/attachments/{attachment_id}")
     def download(attachment_id: str, authorization: str | None = Header(default=None)) -> Response:
         user = get_current_user(ctx, authorization)
-        with ctx.connect() as conn:
-            row = conn.execute(
-                "SELECT attachments.filename, attachments.content_type, attachment_blobs.path "
-                "FROM attachments JOIN attachment_blobs ON attachment_blobs.blob_key = attachments.blob_key "
-                "WHERE attachments.id = ?",
-                (attachment_id,),
-            ).fetchone()
-            if row is None:
-                raise HTTPException(status_code=404, detail="Attachment not found.")
-            permitted = conn.execute(
-                "SELECT 1 FROM attachments WHERE id = ? AND created_by = ? "
-                "UNION SELECT 1 FROM mail_attachment_links WHERE attachment_id = ? AND owner_email = ? LIMIT 1",
-                (attachment_id, user["email"], attachment_id, user["email"]),
-            ).fetchone()
-            if permitted is None:
-                raise HTTPException(status_code=403, detail="Attachment access denied.")
+        row = _resolve_attachment_row_for_user(ctx, attachment_id, user["email"])
         data = Path(row["path"]).read_bytes()
         return Response(
             content=data,
             media_type=row["content_type"],
-            headers={"Content-Disposition": f'inline; filename="{row["filename"]}"'},
+            headers={"Content-Disposition": f'inline; filename="{ctx.decrypt_text(row["filename"])}"'},
         )
+
+    @app.get("/v1/attachments/{attachment_id}/analysis", response_model=AttachmentAnalysisResponse)
+    def analysis(attachment_id: str, authorization: str | None = Header(default=None)) -> AttachmentAnalysisResponse:
+        user = get_current_user(ctx, authorization)
+        row = _resolve_attachment_row_for_user(ctx, attachment_id, user["email"])
+        return AttachmentAnalysisResponse(
+            attachment_id=attachment_id,
+            filename=ctx.decrypt_text(row["filename"]),
+            content_type=row["content_type"],
+            analysis=ctx.decrypt_json(row["analysis_json"]) or {},
+        )
+
+    @app.post("/v1/attachments/{attachment_id}/transform", response_model=AttachmentMeta)
+    def transform(
+        attachment_id: str,
+        payload: AttachmentTransformRequest,
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> AttachmentMeta:
+        user = verify_authenticated_request(
+            ctx,
+            request,
+            authorization,
+            payload.model_dump(),
+        )
+        row = _resolve_attachment_row_for_user(ctx, attachment_id, user["email"])
+        source_filename = ctx.decrypt_text(row["filename"])
+        raw = Path(row["path"]).read_bytes()
+        try:
+            transformed_name, transformed_bytes, analysis_payload = transform_attachment_image(
+                config=ctx.config,
+                filename=source_filename,
+                data=raw,
+                mode=payload.mode,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        stored = store_attachment_bytes(
+            ctx,
+            user["email"],
+            transformed_name,
+            transformed_bytes,
+            analysis=analysis_payload,
+        )
+        log_event(
+            ctx,
+            "attachment_transform",
+            actor_email=user["email"],
+            source_attachment_id=attachment_id,
+            transformed_attachment_id=stored.id,
+            mode=payload.mode,
+        )
+        return stored

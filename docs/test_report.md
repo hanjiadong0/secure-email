@@ -20,10 +20,12 @@
 - rate limiting
 - request MAC rejection on tamper
 - replay rejection
+- prompt-injection language flagging
 - fake attachment rejection
 - unauthorized attachment access rejection
 - forged recall rejection
 - relay MAC rejection
+- local-only model policy blocking remote Ollama endpoints
 
 ### Concurrency
 
@@ -45,7 +47,7 @@ Command used:
 Result:
 
 ```text
-11 passed in 9.93s
+18 passed in 14.21s
 ```
 
 Covered by the current automated suite:
@@ -59,11 +61,19 @@ Covered by the current automated suite:
 - cross-domain queued send with worker-backed relay delivery
 - CC delivery across local and remote recipients
 - suspicious-mail/phishing flagging
+- prompt/script-injection language flagging
 - attachment deduplication behavior
+- attachment analysis metadata generation
+- attachment transform route behavior
+- encrypted-at-rest database field storage
+- local Ollama smart-module enrichment path
+- local Hugging Face smart-module enrichment path
+- local-only policy fallback when a non-local model endpoint is configured
 - concurrent multi-client send and receive acceptance
 - recall on unread cross-domain mail
 - tampered quick-action token rejection
 - send rate limiting
+- common-English stopword filtering in keyword extraction
 
 Known gaps still worth extending:
 

@@ -13,6 +13,7 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 from common.config import DomainConfig
+from common.data_security import DataProtector
 from common.crypto import mac_hex
 from common.utils import isoformat_utc, json_dumps, new_id, utcnow
 
@@ -86,6 +87,7 @@ CREATE TABLE IF NOT EXISTS attachments (
     content_type TEXT NOT NULL,
     size_bytes INTEGER NOT NULL,
     sha256 TEXT NOT NULL,
+    analysis_json TEXT NOT NULL DEFAULT '',
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
@@ -176,6 +178,7 @@ class AppContext:
     db_path: Path = field(init=False)
     log_path: Path = field(init=False)
     alert_path: Path = field(init=False)
+    data_protector: DataProtector = field(init=False, repr=False)
     stop_event: threading.Event = field(init=False, repr=False)
     worker_threads: list[threading.Thread] = field(init=False, repr=False)
     workers_started: bool = field(init=False, default=False)
@@ -185,6 +188,10 @@ class AppContext:
         self.db_path = self.config.data_root / "mail" / "mailstore.sqlite3"
         self.log_path = self.config.data_root / "logs" / "security.jsonl"
         self.alert_path = self.config.data_root / "logs" / "alerts.jsonl"
+        data_secret = self.config.data_encryption_key or (
+            f"{self.config.domain}:{self.config.action_secret}:{self.config.relay_secret}"
+        )
+        self.data_protector = DataProtector(data_secret)
         self.stop_event = threading.Event()
         self.worker_threads = []
         self._init_db()
@@ -197,6 +204,9 @@ class AppContext:
                 conn.execute("ALTER TABLE sessions ADD COLUMN session_key TEXT DEFAULT ''")
             if "last_seq_no" not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN last_seq_no INTEGER NOT NULL DEFAULT 0")
+            attachment_columns = {row["name"] for row in conn.execute("PRAGMA table_info(attachments)").fetchall()}
+            if "analysis_json" not in attachment_columns:
+                conn.execute("ALTER TABLE attachments ADD COLUMN analysis_json TEXT NOT NULL DEFAULT ''")
             mail_columns = {row["name"] for row in conn.execute("PRAGMA table_info(mail_items)").fetchall()}
             if "delivery_state" not in mail_columns:
                 conn.execute("ALTER TABLE mail_items ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'delivered'")
@@ -215,6 +225,18 @@ class AppContext:
     @property
     def blobs_root(self) -> Path:
         return self.config.data_root / "attachments" / "blobs"
+
+    def encrypt_text(self, value: str | None) -> str:
+        return self.data_protector.encrypt_text(value)
+
+    def decrypt_text(self, value: str | None) -> str:
+        return self.data_protector.decrypt_text(value)
+
+    def encrypt_json(self, value: Any) -> str:
+        return self.data_protector.encrypt_json(value)
+
+    def decrypt_json(self, value: str | None) -> Any:
+        return self.data_protector.decrypt_json(value)
 
     def relay_post_sync(self, domain: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         if domain not in self.config.peer_domains:
@@ -306,7 +328,7 @@ class AppContext:
                     message_id,
                     owner_email,
                     "pending",
-                    json_dumps(payload),
+                    self.encrypt_json(payload),
                     available_at or created_at,
                     max_attempts,
                     created_at,

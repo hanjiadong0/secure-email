@@ -1,6 +1,6 @@
 # Smart Secure Email System
 
-A local, security-aware email prototype with two isolated domains, cross-domain delivery, image attachments, recall, quick actions, quick replies, and reproducible tests.
+A local, security-aware email prototype with two isolated domains, cross-domain delivery, image attachments, recall, quick actions, quick replies, local-Ollama and optional local-Hugging-Face smart features, attachment preview and analysis, encrypted-at-rest mailbox storage, and reproducible tests.
 
 This project combines the PDF deep-research plan with the current README direction:
 
@@ -32,13 +32,16 @@ The merged target for this repo is:
 - cross-domain mail delivery
 - multiple recipients and group send
 - image attachment upload and download
+- attachment preview, risk analysis, and safe local transforms
 - mail recall with verification rules
 - quick actions with safe server-side validation
 - quick replies and lightweight smart suggestions
+- local LLM smart analysis through Ollama or optional local Hugging Face models
 - keyword extraction plus classification
 - fuzzy mail/contact search
 - brute-force protection
 - anti-abuse rate limiting
+- cryptographic protection for sensitive database fields and queued job payloads
 - phishing / suspicious mail heuristics
 - structured audit logs
 - reproducible tests, protocol docs, and threat model docs
@@ -55,6 +58,7 @@ That means we separate:
 - incoming processing
 - attachment hashing and deduplication
 - smart analysis like phishing scoring and quick reply generation
+- safe image analysis and transform metadata
 
 This is important because concurrent mail send/receive behavior becomes unstable if every slow step runs inline in the same request path.
 
@@ -93,6 +97,7 @@ Workers handle slower or retriable tasks:
 - attachment dedup / hashing
 - phishing scoring
 - quick reply generation
+- local attachment review
 
 The current implementation uses a SQLite-backed job queue plus bounded background workers for local delivery, cross-domain relay delivery, and inbound inbox insertion.
 
@@ -165,12 +170,14 @@ Bounded worker pools handle slower tasks:
 - hash files
 - deduplicate physical blobs
 - enforce type and size policy
+- derive safe preview and attachment-analysis metadata
 
 #### Smart Workers
 
 - extract keywords
 - generate quick reply suggestions
 - classify suspicious content
+- use local-only model backends when enabled
 
 The key idea is that request threads should not do all slow work inline under concurrent load.
 

@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import json
 import threading
 import time
 from typing import Any
@@ -97,7 +95,7 @@ def _worker_loop(ctx: AppContext, label: str, job_types: tuple[str, ...]) -> Non
 
 
 def _process_job(ctx: AppContext, job: dict[str, Any]) -> None:
-    payload = json.loads(job["payload_json"])
+    payload = ctx.decrypt_json(job["payload_json"]) or {}
     job_type = job["job_type"]
     if job_type == "local_delivery":
         _process_local_delivery(ctx, payload)

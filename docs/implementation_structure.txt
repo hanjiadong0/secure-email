@@ -88,6 +88,11 @@ common/crypto.py
   - HMAC signing and verification
   - MAC generation for request integrity
 
+common/data_security.py
+  Holds field-level at-rest protection helpers:
+  - symmetric encryption/decryption for sensitive SQLite fields
+  - encrypted JSON/text serialization for mailbox/session storage
+
 common/schemas.py
   Contains Pydantic request and response models for:
   - auth
@@ -101,6 +106,7 @@ common/schemas.py
 common/text_features.py
   Implements lightweight "smart" features:
   - tokenization
+  - common-English stopword filtering
   - TF-IDF-like keyword extraction
   - rule-based message classification
   - phishing heuristics
@@ -150,6 +156,7 @@ Responsibilities:
 - provide a database connection helper
 - manage persistent background job queue state
 - manage audit log output
+- encrypt/decrypt sensitive database fields
 - send relay requests to peer domains
 
 Important tables include:
@@ -194,6 +201,7 @@ Current security model:
 - the client uses session_key to MAC important requests
 - the server verifies request ID, sequence number, timestamp, nonce, and MAC
 - replay and duplicate requests are blocked through request_guards
+- session signing keys are encrypted at rest inside SQLite
 
 This is one of the most security-critical modules in the project.
 
@@ -336,6 +344,19 @@ Responsibilities:
 - record security-relevant events
 - mirror high-signal events into a structured alert log
 - keep logging calls consistent across modules
+
+
+4.11 server/smart.py
+--------------------
+
+This module orchestrates the smart-analysis pipeline.
+
+Responsibilities:
+
+- run the built-in heuristic smart features
+- optionally call a local Ollama model for enrichment
+- merge local-LLM output with heuristic phishing controls
+- fall back safely if the local model is unavailable
 
 
 5. CLIENT LAYER: client/

@@ -35,6 +35,7 @@ Mitigations:
 - lockout / throttling
 - random session secrets
 - expiring sessions
+- encrypted-at-rest session signing keys inside SQLite
 
 ### Authenticated Request Tampering
 
@@ -95,20 +96,29 @@ Mitigations:
 - server-generated storage paths
 - per-domain data roots
 - dedup only at physical blob level
+- field-level encryption for sensitive mailbox/session data in the database
+- encrypted persistent job payloads for background delivery work
 
 ### Smart Feature Abuse
 
 - prompt injection from malicious mail body
 - over-sharing mailbox context
 - unsafe autonomous actions
+- attachment-image leakage to remote model providers
+- image transforms preserving hidden metadata
 
 Mitigations:
 
 - advisory-only smart features
+- local-only Ollama or local Hugging Face backends instead of remote hosted models
+- `smart_local_only` blocks non-loopback Ollama endpoints
 - bounded context
+- prompt truncation and untrusted-content quoting before model review
 - no privileged autonomous execution
 - server-side validation on all state-changing actions
 - escaped browser-side mail rendering for message text
+- preview and transform routes still require normal attachment authorization
+- transformed images are re-encoded server-side so metadata like EXIF is dropped
 
 ## Residual Risk
 

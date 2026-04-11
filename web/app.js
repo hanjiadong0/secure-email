@@ -475,6 +475,12 @@ async function handleDetailAction(node) {
       const attachmentId = node.dataset.attachmentId;
       const filename = node.dataset.filename;
       await previewAttachment(attachmentId, filename);
+      return;
+    }
+    if (action === "transform-attachment") {
+      const attachmentId = node.dataset.attachmentId;
+      const mode = node.dataset.mode;
+      await transformAttachmentToComposer(attachmentId, mode);
     }
   } catch (error) {
     showToast(normalizeError(error), true);
@@ -509,10 +515,24 @@ function renderAttachments() {
   ui.attachmentList.innerHTML = state.composeAttachments
     .map(
       (attachment) => `
-        <div class="chip">
-          <span>${escapeHtml(attachment.filename)}</span>
-          <code class="mono">${escapeHtml(attachment.id)}</code>
-          <button type="button" data-remove-attachment="${escapeHtml(attachment.id)}" aria-label="Remove attachment">x</button>
+        <div class="attachment-chip-card">
+          <div class="chip">
+            <span>${escapeHtml(attachment.filename)}</span>
+            <code class="mono">${escapeHtml(attachment.id)}</code>
+            <button type="button" data-remove-attachment="${escapeHtml(attachment.id)}" aria-label="Remove attachment">x</button>
+          </div>
+          <div class="text-list">${escapeHtml(composeAttachmentSummary(attachment))}</div>
+          <div class="inline-actions">
+            <button type="button" class="ghost-button" data-transform-compose-attachment="${escapeHtml(attachment.id)}" data-mode="anime">
+              Anime Copy
+            </button>
+            <button type="button" class="ghost-button" data-transform-compose-attachment="${escapeHtml(attachment.id)}" data-mode="photo_boost">
+              Photo Boost
+            </button>
+            <button type="button" class="ghost-button" data-transform-compose-attachment="${escapeHtml(attachment.id)}" data-mode="thumbnail">
+              Thumbnail
+            </button>
+          </div>
         </div>
       `
     )
@@ -524,6 +544,70 @@ function renderAttachments() {
       renderAttachments();
     });
   });
+  ui.attachmentList.querySelectorAll("[data-transform-compose-attachment]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const attachmentId = button.dataset.transformComposeAttachment;
+      const mode = button.dataset.mode;
+      void transformAttachmentToComposer(attachmentId, mode);
+    });
+  });
+}
+
+function composeAttachmentSummary(attachment) {
+  const analysis = attachment.analysis || {};
+  const dimensions = analysis.dimensions
+    ? `${analysis.dimensions.width}x${analysis.dimensions.height}`
+    : "dimensions unavailable";
+  const backend = analysis.backend || "heuristic";
+  const verdict = analysis.suspicious ? `flagged (${analysis.risk_score || 0})` : `ok (${analysis.risk_score || 0})`;
+  return `${dimensions} | ${backend} | ${verdict}`;
+}
+
+function renderAttachmentAnalysisCard(attachment, includeTransformActions = false) {
+  const analysis = attachment.analysis || {};
+  const labels = Array.isArray(analysis.labels) ? analysis.labels : [];
+  const reasons = Array.isArray(analysis.reasons) ? analysis.reasons : [];
+  const dimensions = analysis.dimensions
+    ? `${analysis.dimensions.width}x${analysis.dimensions.height}`
+    : "unknown size";
+  const summary = analysis.summary || `${attachment.content_type} attachment`;
+  const backend = analysis.backend || "heuristic";
+  const riskLabel = analysis.suspicious ? "Attachment review flagged this image." : "Attachment review did not flag this image.";
+  const transformActions = includeTransformActions
+    ? `
+      <button type="button" class="ghost-button" data-detail-action="transform-attachment" data-attachment-id="${escapeHtml(attachment.id)}" data-mode="anime">
+        Anime Copy
+      </button>
+      <button type="button" class="ghost-button" data-detail-action="transform-attachment" data-attachment-id="${escapeHtml(attachment.id)}" data-mode="photo_boost">
+        Photo Boost
+      </button>
+      <button type="button" class="ghost-button" data-detail-action="transform-attachment" data-attachment-id="${escapeHtml(attachment.id)}" data-mode="thumbnail">
+        Thumbnail
+      </button>
+    `
+    : "";
+  return `
+    <div class="attachment-card">
+      <strong>${escapeHtml(attachment.filename)}</strong>
+      <div class="text-list">${escapeHtml(summary)}</div>
+      <div class="text-list">${escapeHtml(dimensions)} | backend=${escapeHtml(backend)} | risk=${escapeHtml(String(analysis.risk_score || 0))}</div>
+      <div class="text-list">${escapeHtml(riskLabel)}</div>
+      <div class="mail-tags">
+        ${(labels.length ? labels : ["image"]).map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
+      </div>
+      ${
+        reasons.length
+          ? `<div class="text-list">Reasons: ${escapeHtml(reasons.join(", "))}</div>`
+          : ""
+      }
+      <div class="detail-actions">
+        <button type="button" class="ghost-button" data-detail-action="preview-attachment" data-attachment-id="${escapeHtml(attachment.id)}" data-filename="${escapeHtml(attachment.filename)}">
+          Preview
+        </button>
+        ${transformActions}
+      </div>
+    </div>
+  `;
 }
 
 function renderSearchContacts() {
@@ -656,16 +740,12 @@ function renderDetail() {
       </div>
       <div class="detail-block">
         <span>Attachments</span>
-        <div class="detail-actions">
+        <div class="attachment-stack">
           ${
             message.attachments.length
               ? message.attachments
                   .map(
-                    (attachment) => `
-                      <button type="button" class="ghost-button" data-detail-action="preview-attachment" data-attachment-id="${escapeHtml(attachment.id)}" data-filename="${escapeHtml(attachment.filename)}">
-                        Preview ${escapeHtml(attachment.filename)}
-                      </button>
-                    `
+                    (attachment) => renderAttachmentAnalysisCard(attachment, true)
                   )
                   .join("")
               : '<div class="text-list">No attachments.</div>'
@@ -743,6 +823,21 @@ async function previewAttachment(attachmentId, filename) {
     url: URL.createObjectURL(blob),
   };
   renderDetail();
+}
+
+async function transformAttachmentToComposer(attachmentId, mode) {
+  if (!requireSession()) {
+    return;
+  }
+  const transformed = await runClientGuard(`transform_${attachmentId}_${mode}`, async () => {
+    return signedPost(`/v1/attachments/${attachmentId}/transform`, { mode });
+  });
+  if (!transformed) {
+    return;
+  }
+  state.composeAttachments.push(transformed);
+  renderAttachments();
+  showToast(`Created ${mode} copy ${transformed.filename} and added it to the composer.`);
 }
 
 function revokePreview() {
