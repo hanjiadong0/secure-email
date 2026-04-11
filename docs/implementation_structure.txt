@@ -1,0 +1,667 @@
+SECURE EMAIL - IMPLEMENTATION STRUCTURE
+======================================
+
+1. PURPOSE
+----------
+
+This document introduces the current implementation structure of the
+secure-email project.
+
+The system is a local secure mail prototype with:
+
+- two isolated domains
+- a client CLI
+- a FastAPI-based server
+- cross-domain delivery
+- authenticated post-login requests
+- attachment handling
+- recall support
+- quick actions and quick replies
+- search and lightweight classification
+- automated tests
+
+The code is organized so that each responsibility is separated into a
+small module instead of one large file.
+
+
+2. TOP-LEVEL REPOSITORY STRUCTURE
+---------------------------------
+
+README.md
+  Main project overview, architecture, security goals, concurrency model,
+  and testing goals.
+
+pyproject.toml
+  Python project metadata, dependencies, pytest config, and package list.
+
+common/
+  Shared utilities, config loading, schemas, crypto helpers, and text
+  analysis helpers used by both client and server.
+
+server/
+  Domain server implementation. This is the core backend of the system.
+
+client/
+  CLI-based client that logs in, stores local session state, signs
+  authenticated requests, and calls server endpoints.
+
+web/
+  Browser frontend served directly by FastAPI. It uses the same backend
+  endpoints and the same post-login HMAC request-signing model as the CLI.
+
+configs/
+  YAML files for domain-specific configuration such as domain name, port,
+  data root, peer domains, and secrets.
+
+scripts/
+  Helper scripts for starting the two servers, running a demo, and running
+  basic stress tests.
+
+docs/
+  Documentation for protocol design, threat model, test results, and this
+  implementation structure file.
+
+tests/
+  Automated tests for core functional and security-sensitive flows.
+
+
+3. SHARED LAYER: common/
+------------------------
+
+common/utils.py
+  Small helpers used across the project:
+  - UTC timestamps
+  - ID generation
+  - email normalization
+  - JSON canonical serialization
+  - directory creation
+
+common/config.py
+  Loads domain configuration from YAML into a DomainConfig object.
+  It also creates the expected folder layout for each domain's data root.
+
+common/crypto.py
+  Holds security-related helpers:
+  - Argon2id password hashing and verification
+  - secure session token generation
+  - SHA-256 hashing for attachments
+  - HMAC signing and verification
+  - MAC generation for request integrity
+
+common/schemas.py
+  Contains Pydantic request and response models for:
+  - auth
+  - attachments
+  - mail send/draft/recall
+  - groups
+  - quick actions
+  - relay messages
+  - search responses
+
+common/text_features.py
+  Implements lightweight "smart" features:
+  - tokenization
+  - TF-IDF-like keyword extraction
+  - rule-based message classification
+  - phishing heuristics
+  - quick reply suggestion generation
+  - Levenshtein-based fuzzy matching
+
+
+4. SERVER LAYER: server/
+------------------------
+
+The server package represents one mail domain instance, for example
+"a.test" or "b.test".
+
+Each server process has its own:
+
+- config
+- SQLite database
+- attachment blob storage
+- audit log
+
+4.1 server/main.py
+------------------
+
+This is the server entry point.
+
+Responsibilities:
+
+- load the YAML config
+- create the FastAPI app
+- create shared application context
+- register all endpoint groups
+- run Uvicorn
+
+Main idea:
+  One config file creates one isolated domain server process.
+
+
+4.2 server/storage.py
+---------------------
+
+This file defines the AppContext and the database schema.
+
+Responsibilities:
+
+- initialize the SQLite database
+- define all core tables
+- provide a database connection helper
+- manage persistent background job queue state
+- manage audit log output
+- send relay requests to peer domains
+
+Important tables include:
+
+- users
+- sessions
+- rate_events
+- lockouts
+- request_guards
+- relay_guards
+- attachment_blobs
+- attachments
+- mail_items
+- mail_attachment_links
+- groups_store
+- todos
+- contacts
+- job_queue
+
+Why this module matters:
+  It centralizes state and persistence so the rest of the server modules
+  can focus on business logic.
+
+
+4.3 server/auth.py
+------------------
+
+This module handles authentication and post-login request verification.
+
+Responsibilities:
+
+- register users
+- login users
+- verify password hashes
+- create secure sessions
+- load the current authenticated user
+- verify signed state-changing requests
+
+Current security model:
+
+- login returns session_token and session_key
+- the client uses session_key to MAC important requests
+- the server verifies request ID, sequence number, timestamp, nonce, and MAC
+- replay and duplicate requests are blocked through request_guards
+
+This is one of the most security-critical modules in the project.
+
+
+4.4 server/rate_limit.py
+------------------------
+
+This module implements throttling and rate limits.
+
+Responsibilities:
+
+- track login failures
+- temporarily lock accounts after repeated failed login attempts
+- limit send frequency
+- limit upload byte rate
+- return Retry-After headers when blocked
+
+This supports:
+
+- brute-force protection
+- abuse prevention
+- basic resource protection
+
+
+4.5 server/attachments.py
+-------------------------
+
+This module handles image attachment upload and download.
+
+Responsibilities:
+
+- accept attachment upload requests
+- validate extension allowlist
+- validate PNG/JPEG magic bytes
+- enforce size limits
+- hash files with SHA-256
+- store deduplicated physical blobs
+- create logical attachment metadata entries
+- authorize download access
+- prepare attachments for relay to another server
+
+Storage model:
+
+- one physical blob may be shared by many logical attachment records
+- users do not control storage path names
+- mailbox permission checks guard access
+
+
+4.6 server/phishing.py
+----------------------
+
+This is a thin wrapper around the phishing heuristic logic from
+common/text_features.py.
+
+Responsibilities:
+
+- analyze mail body and subject
+- return phishing score and suspicious flags
+
+
+4.7 server/mailbox.py
+---------------------
+
+This is the largest business-logic module.
+
+Responsibilities:
+
+- store inbox, sent, and draft copies
+- send mail
+- maintain sender-side delivery state
+- load inbox/sent/drafts
+- mark messages as read
+- recall messages
+- manage groups
+- execute quick actions
+- create TODO items
+- provide search and contact autocomplete
+- build quick reply suggestions
+- attach classification, keywords, and security flags to stored mail
+
+Important design idea:
+  Each user sees mailbox copies scoped to owner_email, which helps enforce
+  authorization boundaries.
+
+Quick actions:
+
+- stored as signed tokens bound to message_id and recipient
+- validated server-side before state changes happen
+
+Search:
+
+- fuzzy matching over message content and contacts
+- simple enough for local demo scope
+
+
+4.8 server/relay.py
+-------------------
+
+This module handles server-to-server communication.
+
+Responsibilities:
+
+- accept incoming cross-domain mail relay
+- accept incoming recall relay
+- verify relay MAC, nonce, timestamp, and source domain
+- reject duplicate relay requests
+- enqueue validated inbound delivery work for local processing
+
+Security idea:
+  Relay endpoints are separate from normal user endpoints and must only
+  accept trusted peer-domain traffic.
+
+
+4.9 server/workers.py
+---------------------
+
+This module runs the background worker threads.
+
+Responsibilities:
+
+- poll the persistent SQLite-backed job queue
+- process local inbox delivery jobs
+- process remote relay delivery jobs
+- process inbound relay insertion jobs
+- retry transient failures with bounded backoff
+- update sender-visible delivery state after job completion/failure
+
+Why this module matters:
+  It turns the README queue/worker design into real runtime behavior
+  instead of keeping delivery inline inside request handlers.
+
+
+4.10 server/logging.py
+----------------------
+
+This module is a small wrapper for structured audit events.
+
+Responsibilities:
+
+- record security-relevant events
+- keep logging calls consistent across modules
+
+
+5. CLIENT LAYER: client/
+------------------------
+
+The client package is a simple CLI for interacting with the system.
+
+5.1 client/api.py
+-----------------
+
+This module is the client-side API wrapper.
+
+Responsibilities:
+
+- register and login
+- store session data in local client state files
+- sign authenticated requests with request ID, sequence, timestamp,
+  nonce, and body MAC
+- send GET and POST requests to the server
+
+Important behavior:
+
+- after login, the session is saved locally
+- every state-changing request increments seq_no
+- the server and client both rely on the same canonical request structure
+
+
+5.2 client/cli.py
+-----------------
+
+This is the command-line interface entry point.
+
+Supported command categories:
+
+- register
+- login
+- upload
+- inbox / sent / drafts
+- message inspection
+- send
+- draft
+- recall
+- mark-read
+- action
+- reply
+- group-create
+- group-add
+- group-send
+- search
+- autocomplete
+- todos
+
+This file translates user command-line arguments into API calls.
+
+
+5.3 client/ui.py
+----------------
+
+This module formats CLI output for:
+
+- JSON blocks
+- message list views
+
+It keeps presentation separate from request logic.
+
+
+5.4 client/quick_reply.py
+-------------------------
+
+This module contains a small helper for reply text selection.
+
+Responsibilities:
+
+- choose explicit text if provided
+- otherwise choose one of the generated quick reply suggestions
+
+
+6. WEB FRONTEND LAYER: web/
+---------------------------
+
+The web folder contains the browser-based user interface.
+
+web/index.html
+  Main browser layout. It contains the dashboard structure for:
+  - register/login
+  - compose
+  - search
+  - groups
+  - mailbox tabs
+  - detailed message inspection
+
+web/styles.css
+  Visual design for the browser UI. It handles layout, responsive behavior,
+  panels, tabs, detail cards, and toast notifications.
+
+web/app.js
+  Main browser application logic.
+
+  Responsibilities:
+
+  - load health/domain status
+  - register and login users
+  - save session state in localStorage
+  - compute HMAC request signatures in the browser
+  - refresh inbox/sent/drafts/todos
+  - upload attachments
+  - send mail and save drafts
+  - run search
+  - create/send groups
+  - preview attachments
+  - execute quick replies and quick actions
+  - trigger recall
+
+Important design point:
+  The web frontend is not a separate backend. It is only another client
+  layer on top of the same secure API.
+
+
+7. CONFIGURATION LAYER: configs/
+--------------------------------
+
+configs/domainA.yaml
+  Config for domain A server.
+
+configs/domainB.yaml
+  Config for domain B server.
+
+Each config defines:
+
+- domain name
+- host and port
+- data root
+- peer domain mapping
+- action secret
+- relay secret
+- rate limit values
+- recall window
+- attachment size limits
+
+These configs make it easy to start two isolated servers locally.
+
+
+8. SCRIPT LAYER: scripts/
+-------------------------
+
+scripts/start_domain_a.ps1
+  Starts the domain A server.
+
+scripts/start_domain_b.ps1
+  Starts the domain B server.
+
+scripts/run_demo.ps1
+  Demonstrates a small end-to-end flow:
+  - register users
+  - login users
+  - send a cross-domain mail
+  - inspect inbox
+
+scripts/stress_test.py
+  Basic concurrency/load helper for:
+  - many users sending one mail
+  - one user sending many mails
+
+Current note:
+  The backend now uses queued background delivery workers. The stress
+  script is still a lightweight helper rather than a full benchmark
+  harness, but it exercises the real queued delivery path.
+
+
+9. DOCUMENTATION LAYER: docs/
+-----------------------------
+
+docs/protocol.md
+  Describes the client/server and server/server protocol shape.
+
+docs/threat_model.md
+  Describes assets, trust boundaries, major threats, and mitigations.
+
+docs/test_report.md
+  Summarizes intended test coverage and current verification results.
+
+docs/implementation_structure.txt
+  This file. It explains how the implementation is organized.
+
+
+10. TEST LAYER: tests/
+----------------------
+
+tests/test_secure_mail.py
+  Main automated test file for the current MVP.
+
+The current suite covers:
+
+- login lockout
+- web root serving
+- signed authenticated requests
+- replay rejection
+- invalid attachment rejection
+- cross-domain queued send
+- CC delivery across domains
+- recall
+- tampered quick-action token rejection
+- send rate limiting
+
+Test style:
+
+- creates two isolated app instances
+- uses FastAPI TestClient
+- simulates relay between both servers
+- signs requests the same way the real client does
+
+
+11. RUNTIME DATA FLOW
+---------------------
+
+10.1 Register/Login Flow
+------------------------
+
+1. Client sends register/login request.
+2. server/auth.py validates credentials.
+3. Passwords are hashed or verified through common/crypto.py.
+4. A session record is stored in SQLite.
+5. Login response returns session_token and session_key.
+
+
+10.2 Authenticated Mail Send Flow
+---------------------------------
+
+1. Client loads saved session state.
+2. client/api.py creates request_id, nonce, timestamp, seq_no, and HMAC.
+3. server/auth.py verifies:
+   - bearer token
+   - session validity
+   - request MAC
+   - replay/duplicate guards
+4. server/mailbox.py checks send limits.
+5. Attachments are resolved through server/attachments.py.
+6. server/mailbox.py stores the sender's sent copy with delivery_state=queued.
+7. server/mailbox.py inserts local-delivery and remote-delivery jobs into job_queue.
+8. server/workers.py picks up queued jobs in the background.
+9. For remote delivery, server/storage.py sends the relay request.
+10. server/relay.py on the peer validates relay security and enqueues inbound work.
+11. An inbound worker stores inbox mail and attachment metadata on the peer domain.
+
+
+10.3 Recall Flow
+----------------
+
+1. Sender submits a signed recall request.
+2. server/mailbox.py confirms ownership and time window.
+3. Local unread inbox copies are updated.
+4. Remote recipients are handled through relay recall.
+5. Recall result statuses are returned and logged.
+
+
+10.4 Attachment Flow
+--------------------
+
+1. Client uploads base64 image content.
+2. server/attachments.py validates type and size.
+3. File is hashed and stored under a generated blob path.
+4. Attachment metadata is stored separately from physical blob content.
+5. Mail items only reference attachment metadata.
+
+
+12. SECURITY STRUCTURE
+----------------------
+
+The main security layers are:
+
+- Argon2id password hashing
+- opaque session token
+- per-request MAC verification after login
+- nonce / timestamp / sequence replay protection
+- login lockout
+- send and upload rate limiting
+- relay MAC verification between servers
+- signed quick action tokens
+- image-only attachment allowlist with magic-byte validation
+- mailbox ownership checks
+- structured audit logging
+
+
+13. CONCURRENCY STRUCTURE
+-------------------------
+
+The project is designed around the idea that request handling should stay
+short and safe, while slower work moves to queue/worker processing.
+
+Current status:
+
+- the codebase already separates responsibilities by module
+- delivery jobs are persisted in SQLite
+- bounded worker threads process local delivery, relay delivery, and inbound insertion
+- sent mailbox rows expose delivery_state such as queued or delivered
+- stress_test.py gives a starting point for concurrency experiments
+- request handlers return after safe state changes and job enqueueing instead of waiting on all relay work inline
+
+
+14. CURRENT LIMITATIONS
+-----------------------
+
+Important implementation notes:
+
+- demo configs currently use local HTTP, while the documented security
+  model expects HTTPS/TLS in a stronger deployment
+- phishing detection is heuristic, not ML-based
+- search is lightweight and local
+- the system is an educational prototype, not a production mail platform
+
+
+15. SUMMARY
+-----------
+
+The implementation is divided into five main areas:
+
+- common shared logic
+- domain server backend
+- client CLI
+- configs/scripts/docs
+- automated tests
+
+This structure makes the project easier to understand, test, and extend.
+
+If you want to continue the project, the most natural next steps are:
+
+- add stronger TLS demo configuration
+- expand tests into separate functional/security/concurrency folders
+- add richer mailbox state transitions
+- strengthen queue recovery/observability such as dashboards, dead-letter handling, and more explicit retry policy

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Secure Email Console</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Smart Secure Mail</p>
+          <h1>Browser Mail Console</h1>
+          <p>
+            Work with the secure mail system directly in the browser: register,
+            log in, compose, search, reply, recall, and inspect the security
+            metadata that moves with each message.
+          </p>
+        </div>
+        <div class="hero-card">
+          <div class="status-badge" id="domainBadge">Loading…</div>
+          <div class="status-grid">
+            <div>
+              <span>Service</span>
+              <strong id="serviceStatus">Starting</strong>
+            </div>
+            <div>
+              <span>User</span>
+              <strong id="sessionUser">Guest</strong>
+            </div>
+            <div>
+              <span>Seq</span>
+              <strong id="sessionSeq">0</strong>
+            </div>
+          </div>
+          <button type="button" class="ghost-button" id="logoutButton">Log Out</button>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <section class="panel auth-panel">
+          <div class="panel-header">
+            <h2>Access</h2>
+            <p>Each browser window talks to the current domain only.</p>
+          </div>
+          <div class="auth-grid">
+            <form id="registerForm" class="stack-form">
+              <h3>Create Account</h3>
+              <label>Email <input type="email" id="registerEmail" placeholder="alice@a.test" required></label>
+              <label>Password <input type="password" id="registerPassword" placeholder="Choose a password" required></label>
+              <button type="submit">Register</button>
+            </form>
+            <form id="loginForm" class="stack-form">
+              <h3>Sign In</h3>
+              <label>Email <input type="email" id="loginEmail" placeholder="alice@a.test" required></label>
+              <label>Password <input type="password" id="loginPassword" placeholder="Password" required></label>
+              <button type="submit">Login</button>
+            </form>
+          </div>
+        </section>
+
+        <section class="panel compose-panel">
+          <div class="panel-header">
+            <h2>Compose</h2>
+            <p>Send mail, save drafts, and upload image attachments.</p>
+          </div>
+          <form id="composeForm" class="compose-form">
+            <label>To <input type="text" id="composeTo" placeholder="bob@b.test, team@a.test"></label>
+            <label>Cc <input type="text" id="composeCc" placeholder="optional recipients"></label>
+            <label>Subject <input type="text" id="composeSubject" placeholder="Subject line"></label>
+            <label>Body <textarea id="composeBody" rows="7" placeholder="Write your message"></textarea></label>
+            <div class="compose-toolbar">
+              <label class="file-picker">
+                <span>Choose Image</span>
+                <input type="file" id="attachmentFile" accept=".png,.jpg,.jpeg,image/png,image/jpeg">
+              </label>
+              <button type="button" id="uploadAttachmentButton" class="secondary-button">Upload Attachment</button>
+              <button type="submit">Send Mail</button>
+              <button type="button" id="saveDraftButton" class="secondary-button">Save Draft</button>
+              <button type="button" id="clearComposeButton" class="ghost-button">Clear</button>
+            </div>
+            <div class="chip-list" id="attachmentList"></div>
+          </form>
+        </section>
+
+        <section class="panel utility-panel">
+          <div class="panel-header">
+            <h2>Tools</h2>
+            <p>Refresh mailboxes, search, and work with groups.</p>
+          </div>
+          <div class="utility-grid">
+            <form id="searchForm" class="stack-form compact">
+              <h3>Search</h3>
+              <label>Query <input type="text" id="searchQuery" placeholder="meeting, bob, invoice"></label>
+              <div class="inline-actions">
+                <button type="submit">Run Search</button>
+                <button type="button" id="clearSearchButton" class="ghost-button">Clear</button>
+                <button type="button" id="refreshButton" class="secondary-button">Refresh</button>
+              </div>
+              <div id="searchContacts" class="text-list"></div>
+            </form>
+            <form id="groupCreateForm" class="stack-form compact">
+              <h3>Create Group</h3>
+              <label>Group Name <input type="text" id="groupName" placeholder="project-team"></label>
+              <label>Members <input type="text" id="groupMembers" placeholder="alice@a.test, bob@b.test"></label>
+              <button type="submit">Save Group</button>
+            </form>
+            <form id="groupSendForm" class="stack-form compact">
+              <h3>Send To Group</h3>
+              <label>Group Name <input type="text" id="groupSendName" placeholder="project-team"></label>
+              <label>Subject <input type="text" id="groupSendSubject" placeholder="Group subject"></label>
+              <label>Body <textarea id="groupSendBody" rows="4" placeholder="Group message"></textarea></label>
+              <button type="submit">Send Group Mail</button>
+            </form>
+          </div>
+        </section>
+
+        <section class="panel mailbox-panel">
+          <div class="panel-header">
+            <h2>Mailbox</h2>
+            <p>Browse inbox, sent, drafts, and todos.</p>
+          </div>
+          <div class="tab-row" id="mailboxTabs">
+            <button type="button" data-mailbox="inbox" class="tab-button active">Inbox</button>
+            <button type="button" data-mailbox="sent" class="tab-button">Sent</button>
+            <button type="button" data-mailbox="drafts" class="tab-button">Drafts</button>
+            <button type="button" data-mailbox="todos" class="tab-button">Todos</button>
+            <button type="button" data-mailbox="search" class="tab-button">Search</button>
+          </div>
+          <div id="mailboxList" class="mail-list"></div>
+        </section>
+
+        <section class="panel detail-panel">
+          <div class="panel-header">
+            <h2>Detail</h2>
+            <p>Inspect message body, security flags, attachments, and actions.</p>
+          </div>
+          <div id="detailView" class="detail-view">
+            <div class="empty-state">
+              <strong>No message selected</strong>
+              <p>Choose a message from the mailbox list to inspect it here.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

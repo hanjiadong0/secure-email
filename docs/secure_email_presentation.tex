@@ -1,0 +1,295 @@
+% Compile with: xelatex docs/secure_email_presentation.tex
+\documentclass[aspectratio=169]{beamer}
+
+\usetheme{Madrid}
+\usecolortheme{default}
+\setbeamertemplate{navigation symbols}{}
+
+\title{Smart Secure Email System}
+\subtitle{Assignment-Aligned Project Presentation}
+\author{Secure Email Project}
+\date{\today}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+\begin{frame}{Assignment Objective}
+  \begin{itemize}
+    \item Build a \textbf{usable}, \textbf{testable}, and \textbf{security-aware} email system in a local environment.
+    \item Implement both \textbf{server} and \textbf{client} components.
+    \item Add at least basic \textbf{intelligent features}.
+    \item Provide \textbf{reproducible test steps and results}.
+    \item Avoid using a mature open-source email system as the core implementation.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Design Strategy}
+  \begin{itemize}
+    \item Use a custom HTTPS/JSON mail protocol instead of SMTP/IMAP as the core runtime.
+    \item Simulate \textbf{two isolated email domains} with two independent FastAPI servers.
+    \item Keep request handling short and safe, then move slow work to a \textbf{queue-backed worker model}.
+    \item Treat security as part of system design, not an afterthought:
+    \begin{itemize}
+      \item authentication
+      \item replay protection
+      \item rate limiting
+      \item relay verification
+      \item attachment safety
+    \end{itemize}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Architecture Overview}
+  \begin{columns}[T]
+    \column{0.48\textwidth}
+    \textbf{Client Side}
+    \begin{itemize}
+      \item Browser frontend
+      \item CLI client
+      \item Signed authenticated requests
+    \end{itemize}
+
+    \textbf{Server Side}
+    \begin{itemize}
+      \item Domain A server
+      \item Domain B server
+      \item Auth, mailbox, attachments, relay
+    \end{itemize}
+
+    \column{0.48\textwidth}
+    \textbf{Workers}
+    \begin{itemize}
+      \item Local delivery jobs
+      \item Remote relay jobs
+      \item Inbound insertion jobs
+    \end{itemize}
+
+    \textbf{Storage}
+    \begin{itemize}
+      \item SQLite per domain
+      \item Attachment blob store
+      \item Audit log
+    \end{itemize}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Server Management Requirement}
+  \begin{itemize}
+    \item Two servers run at the same time:
+    \begin{itemize}
+      \item \texttt{a.test} on port 8443
+      \item \texttt{b.test} on port 9443
+    \end{itemize}
+    \item The two systems can send mail to each other through authenticated relay endpoints.
+    \item Their storage is logically isolated:
+    \begin{itemize}
+      \item separate database files
+      \item separate attachment roots
+      \item separate security logs
+    \end{itemize}
+    \item One server never directly reads or writes the other domain's user data directory.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Client Management Requirement}
+  \begin{itemize}
+    \item Registration and login
+    \item Compose mail, inbox, sent, drafts
+    \item Group send and saved groups
+    \item Quick reply support with subject/thread context
+    \item Image attachment upload and preview/download
+    \item Mail recall for sent messages
+    \item Quick actions designed from the user perspective:
+    \begin{itemize}
+      \item add TODO
+      \item acknowledge message
+    \end{itemize}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Intelligent Features Implemented}
+  \begin{itemize}
+    \item \textbf{Keyword extraction}
+    \item \textbf{Mail classification}
+    \item \textbf{Fuzzy search} for messages and contacts
+    \item \textbf{Quick reply suggestions}
+    \item \textbf{Phishing / suspicious-mail heuristics}
+    \item \textbf{Attachment deduplication} as a storage-aware optimization
+  \end{itemize}
+
+  \vspace{0.4em}
+  This exceeds the ``at least 2 algorithm-enhanced features'' requirement.
+\end{frame}
+
+\begin{frame}{Security and Stability Design}
+  \begin{itemize}
+    \item Passwords are stored with \textbf{Argon2id}, never in plaintext.
+    \item Post-login requests use:
+    \begin{itemize}
+      \item session token
+      \item request ID
+      \item nonce
+      \item timestamp
+      \item sequence number
+      \item HMAC over canonical request content
+    \end{itemize}
+    \item Login anti-brute-force protection:
+    \begin{itemize}
+      \item short-term lockout
+      \item rate limiting
+    \end{itemize}
+    \item Send/upload abuse control with rate limits
+    \item Relay authentication between the two domains
+    \item Recall verification to prevent incorrect recall execution
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{How Secure Post-Login Interaction Works}
+  \begin{enumerate}
+    \item User logs in once and gets a session token plus session key.
+    \item Sensitive requests include request metadata headers.
+    \item Client computes an HMAC over method, path, metadata, and body.
+    \item Server verifies:
+    \begin{itemize}
+      \item session validity
+      \item timestamp window
+      \item nonce uniqueness
+      \item sequence progression
+      \item HMAC correctness
+    \end{itemize}
+    \item Replayed or tampered requests are rejected.
+  \end{enumerate}
+\end{frame}
+
+\begin{frame}{Queue and Concurrency Model}
+  \begin{itemize}
+    \item Request handlers do not wait for all relay work inline.
+    \item A send request:
+    \begin{itemize}
+      \item validates authentication and policy
+      \item writes sender-side state
+      \item inserts delivery jobs into a persistent SQLite queue
+      \item returns quickly with \texttt{queued}
+    \end{itemize}
+    \item Worker threads handle:
+    \begin{itemize}
+      \item local delivery
+      \item remote relay
+      \item inbound inbox insertion
+    \end{itemize}
+    \item This improves stability under concurrent client activity.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Attachment and Storage Safety}
+  \begin{itemize}
+    \item Only image attachments are allowed:
+    \begin{itemize}
+      \item PNG
+      \item JPG / JPEG
+    \end{itemize}
+    \item Validation uses magic bytes, not only file extension.
+    \item Files are stored with generated blob paths, not user-controlled paths.
+    \item Blob storage uses SHA-256-based deduplication.
+    \item Attachment access is protected by mailbox ownership checks.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Testing and Acceptance Coverage}
+  \begin{itemize}
+    \item \textbf{Functional}
+    \begin{itemize}
+      \item cross-domain send success
+      \item inbox / sent / drafts
+      \item attachments
+      \item recall
+      \item groups and quick actions
+    \end{itemize}
+    \item \textbf{Concurrency and stability}
+    \begin{itemize}
+      \item many users sending concurrently
+      \item one recipient receiving burst traffic
+    \end{itemize}
+    \item \textbf{Security}
+    \begin{itemize}
+      \item brute-force login protection
+      \item send rate limiting
+      \item replay rejection
+      \item tampered action rejection
+      \item suspicious mail detection
+    \end{itemize}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Results}
+  \begin{itemize}
+    \item Automated regression suite:
+    \begin{itemize}
+      \item \texttt{7 passed, 1 warning in 4.38s}
+    \end{itemize}
+    \item Verified scenarios include:
+    \begin{itemize}
+      \item queued cross-domain send
+      \item CC delivery across domains
+      \item login lockout
+      \item invalid attachment rejection
+      \item recall behavior
+      \item web UI serving
+    \end{itemize}
+    \item Manual stress run completed:
+    \begin{itemize}
+      \item 100 different users each sent 1 mail
+      \item all 100 new messages reached the target inbox
+    \end{itemize}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Delivered Artifacts}
+  \begin{itemize}
+    \item Server and client source code
+    \item Dual-domain startup scripts and configuration
+    \item Protocol documentation
+    \item Threat model and protection explanation
+    \item Test scripts and test report
+    \item Browser frontend for direct demonstration
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Bonus and Extension Directions}
+  \begin{itemize}
+    \item Malicious-script discussion is relevant because email content is attacker-controlled input.
+    \item Current design reduces risk by:
+    \begin{itemize}
+      \item treating smart features as advisory only
+      \item avoiding privileged autonomous actions
+      \item escaping browser-side content
+    \end{itemize}
+    \item Future bonus work can include:
+    \begin{itemize}
+      \item end-to-end encryption design
+      \item stronger audit alerting
+      \item P2P mail exploration
+      \item dead-letter / queue observability
+    \end{itemize}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Conclusion}
+  \begin{itemize}
+    \item The project satisfies the assignment through a custom two-domain secure mail prototype.
+    \item It combines:
+    \begin{itemize}
+      \item distributed-system structure
+      \item practical security controls
+      \item queue-based concurrency handling
+      \item intelligent mailbox features
+      \item reproducible testing
+    \end{itemize}
+    \item The final result is small enough to explain clearly, but rich enough to demonstrate engineering depth.
+  \end{itemize}
+\end{frame}
+
+\end{document}
