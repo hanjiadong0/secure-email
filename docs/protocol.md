@@ -171,6 +171,29 @@ Typical response:
 }
 ```
 
+### Quick Action Execution
+
+`POST /v1/actions/execute`
+
+```json
+{
+  "token": "<signed-action-token>"
+}
+```
+
+Quick-action tokens are:
+
+- signed with `action_secret`
+- recipient-bound and message-bound
+- time-limited with `issued_at` and `expires_at`
+- one-time-use (replay attempts are rejected)
+
+### Calendar Events
+
+`GET /v1/calendar/events`
+
+Returns calendar entries created from one-click quick actions in inbox mail.
+
 ### Upload Attachment
 
 `POST /v1/attachments/upload`
@@ -182,7 +205,7 @@ Typical response:
 }
 ```
 
-Only PNG and JPEG are accepted.
+All attachment types are accepted. Image AI analysis and transform routes are only applied to image attachments.
 
 Attachment metadata stays API-visible, but sensitive database fields and
 persistent queued job payloads are encrypted at rest before being written to the

@@ -159,6 +159,27 @@ CREATE TABLE IF NOT EXISTS todos (
 );
 CREATE INDEX IF NOT EXISTS idx_todos_owner_created_at ON todos(owner_email, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS calendar_events (
+    id TEXT PRIMARY KEY,
+    owner_email TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    starts_at TEXT NOT NULL,
+    duration_minutes INTEGER NOT NULL DEFAULT 30,
+    created_at TEXT NOT NULL,
+    source_action TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_calendar_events_owner_start ON calendar_events(owner_email, starts_at DESC);
+
+CREATE TABLE IF NOT EXISTS action_token_uses (
+    token_hash TEXT PRIMARY KEY,
+    owner_email TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    used_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_action_token_uses_owner_used_at ON action_token_uses(owner_email, used_at DESC);
+
 CREATE TABLE IF NOT EXISTS contacts (
     owner_email TEXT NOT NULL,
     contact_email TEXT NOT NULL,

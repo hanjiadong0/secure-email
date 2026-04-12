@@ -13,6 +13,7 @@ const state = {
     search: [],
   },
   todos: [],
+  calendarEvents: [],
   searchContacts: [],
   selectedMessageId: null,
   composeAttachments: [],
@@ -359,6 +360,7 @@ function handleLogout() {
   state.securityEvidence = null;
   state.mailboxes = { inbox: [], sent: [], drafts: [], search: [] };
   state.todos = [];
+  state.calendarEvents = [];
   state.searchContacts = [];
   state.selectedMessageId = null;
   state.composeAttachments = [];
@@ -388,6 +390,7 @@ async function refreshAll() {
       state.mailboxes.sent = await hydrateMailbox(dashboard.sent || []);
       state.mailboxes.drafts = await hydrateMailbox(dashboard.drafts || []);
       state.todos = dashboard.todos || [];
+      state.calendarEvents = dashboard.calendar_events || [];
       if (!lookupSelectedMessage() && state.mailboxes.inbox.length) {
         state.selectedMessageId = state.mailboxes.inbox[0].message_id;
       }
@@ -540,8 +543,15 @@ async function handleSaveDraft() {
     showToast("Encrypted drafts are not available in the browser yet.", true);
     return;
   }
-  const composeBody = await buildComposeBody();
-  const body = { ...composeBody, message_id: null, send_now: false };
+  const body = {
+    message_id: null,
+    to: csv(ui.composeTo.value),
+    cc: csv(ui.composeCc.value),
+    subject: ui.composeSubject.value.trim(),
+    body_text: ui.composeBody.value.trim(),
+    attachment_ids: state.composeAttachments.map((attachment) => attachment.id),
+    send_now: false,
+  };
   await runClientGuard("save_draft", async () => {
     const result = await signedPost("/v1/mail/draft", body);
     await refreshAll();
@@ -680,8 +690,25 @@ async function handleDetailAction(node) {
     if (action === "execute-token") {
       const token = node.dataset.token;
       await runClientGuard("execute_action", async () => {
-        await signedPost("/v1/actions/execute", { token });
+        const result = await signedPost("/v1/actions/execute", { token });
         await refreshAll();
+        const status = String(result?.status || "");
+        if (status === "todo_added") {
+          showToast("Follow-up added.");
+          return;
+        }
+        if (status === "calendar_event_added") {
+          showToast("Calendar event added.");
+          return;
+        }
+        if (status === "phishing_reported") {
+          showToast("Message reported and flagged for review.");
+          return;
+        }
+        if (status === "acknowledged") {
+          showToast("Message marked as read.");
+          return;
+        }
         showToast("Action completed.");
       });
       return;
@@ -742,7 +769,6 @@ async function buildComposeBody() {
     body_text: bodyText,
     attachment_ids: state.composeAttachments.map((attachment) => attachment.id),
     thread_id: null,
-    e2e_envelope: null,
   };
 }
 
@@ -1044,12 +1070,33 @@ function renderMailboxList() {
       `;
     return;
   }
+  if (state.activeMailbox === "calendar") {
+    ui.mailboxList.innerHTML = state.calendarEvents.length
+      ? state.calendarEvents
+          .map(
+            (event) => `
+              <article class="mail-card">
+                <strong>${escapeHtml(event.title)}</strong>
+                <div class="mail-snippet">Starts ${escapeHtml(formatTime(event.starts_at))} (${escapeHtml(String(event.duration_minutes))} min)</div>
+              </article>
+            `
+          )
+          .join("")
+      : `
+        <div class="empty-state">
+          <strong>No calendar items yet</strong>
+          <p>Use "Add To Calendar" from an inbox message to create one-click schedule items.</p>
+        </div>
+      `;
+    return;
+  }
   const messages = currentMailboxMessages();
   if (!messages.length) {
     const mailboxName = {
       inbox: "inbox",
       sent: "sent mail",
       drafts: "drafts",
+      calendar: "calendar",
       search: "search results",
       todos: "follow-ups",
     }[state.activeMailbox] || state.activeMailbox;

@@ -9,6 +9,7 @@ from common.crypto import sign_payload, verify_signed_payload
 from common.schemas import (
     ActionExecutionRequest,
     AttachmentMeta,
+    CalendarEvent,
     ContactSuggestion,
     DraftRequest,
     GroupCreateRequest,
@@ -35,12 +36,24 @@ E2E_SUBJECT_PLACEHOLDER = "[End-to-end encrypted message]"
 E2E_BODY_PLACEHOLDER = (
     "This message is end-to-end encrypted. Open it in a compatible client with your private key to decrypt it."
 )
+ACTION_TOKEN_TTL_HOURS = 72
+ACTION_TOKEN_MAX_LIFETIME_HOURS = 14 * 24
 
 
 def _client_ip(request: Request) -> str:
     if request.client and request.client.host:
         return request.client.host
     return "unknown"
+
+
+async def _signed_payload_from_request(request: Request) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    return payload
 
 
 def _touch_contacts(conn, owner_email: str, contacts: list[str], source: str) -> None:
@@ -65,12 +78,51 @@ def _dedupe_emails(items: list[str]) -> list[str]:
     return normalized_items
 
 
-def _build_actions(ctx: AppContext, message_id: str, recipient_email: str, subject: str) -> list[dict[str, str]]:
-    title = f"Follow up: {(subject or 'Message')[:48]}".strip()
+def _calendar_title_from_subject(subject: str) -> str:
+    normalized_subject = (subject or "").strip()
+    if not normalized_subject:
+        normalized_subject = "Message follow-up"
+    return f"Mail follow-up: {normalized_subject[:64]}"
+
+
+def _infer_calendar_start(subject: str, body_text: str) -> str:
+    text = f"{subject} {body_text}".lower()
+    now = utcnow().replace(second=0, microsecond=0)
+    if "tomorrow" in text:
+        return isoformat_utc((now + timedelta(days=1)).replace(hour=9, minute=0))
+    if "today" in text:
+        return isoformat_utc((now + timedelta(hours=1)).replace(minute=0))
+    if any(token in text for token in {"meeting", "call", "deadline", "appointment", "review"}):
+        return isoformat_utc((now + timedelta(hours=2)).replace(minute=0))
+    return isoformat_utc((now + timedelta(days=1)).replace(hour=10, minute=0))
+
+
+def _build_actions(
+    ctx: AppContext,
+    message_id: str,
+    recipient_email: str,
+    subject: str,
+    body_text: str,
+    suspicious: bool = False,
+) -> list[dict[str, str]]:
+    normalized_subject = (subject or "").strip() or "Message"
+    todo_title = f"Follow up: {normalized_subject[:48]}"
     actions = [
-        {"action": "add_todo", "label": "Add TODO", "title": title},
-        {"action": "acknowledge", "label": "Acknowledge", "title": "Acknowledge message"},
+        {"action": "add_todo", "label": "Add Follow-Up", "title": todo_title},
+        {
+            "action": "add_calendar_event",
+            "label": "Add To Calendar",
+            "title": _calendar_title_from_subject(subject),
+        },
+        {"action": "acknowledge", "label": "Mark As Read", "title": "Acknowledge message"},
+        {
+            "action": "report_phishing",
+            "label": "Report Phishing" if suspicious else "Report Suspicious",
+            "title": "User-reported suspicious message",
+        },
     ]
+    issued_at = isoformat_utc()
+    expires_at = isoformat_utc(utcnow() + timedelta(hours=ACTION_TOKEN_TTL_HOURS))
     signed: list[dict[str, str]] = []
     for action in actions:
         payload = {
@@ -78,6 +130,9 @@ def _build_actions(ctx: AppContext, message_id: str, recipient_email: str, subje
             "recipient": recipient_email,
             "action": action["action"],
             "title": action["title"],
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "nonce": new_id(),
         }
         signed.append(
             {
@@ -130,6 +185,19 @@ def _todo_row_to_item(ctx: AppContext, row) -> TodoItem:
         message_id=row["message_id"],
         title=ctx.decrypt_text(row["title"]),
         created_at=row["created_at"],
+    )
+
+
+def _calendar_row_to_item(ctx: AppContext, row) -> CalendarEvent:
+    return CalendarEvent(
+        id=row["id"],
+        owner_email=row["owner_email"],
+        message_id=row["message_id"],
+        title=ctx.decrypt_text(row["title"]),
+        starts_at=row["starts_at"],
+        duration_minutes=row["duration_minutes"],
+        created_at=row["created_at"],
+        source_action=row["source_action"],
     )
 
 
@@ -210,7 +278,18 @@ def store_mail_copy(
                         reasons=security_flags.get("reasons", []),
                     )
             quick_replies = smart["quick_replies"] if folder == "inbox" else []
-            actions = _build_actions(ctx, message_id, owner_email, subject) if folder == "inbox" and not recalled else []
+            actions = (
+                _build_actions(
+                    ctx,
+                    message_id,
+                    owner_email,
+                    subject,
+                    body_text,
+                    suspicious=bool(security_flags.get("suspicious")),
+                )
+                if folder == "inbox" and not recalled
+                else []
+            )
         existing = conn.execute(
             "SELECT mailbox_item_id FROM mail_items WHERE owner_email = ? AND folder = ? AND message_id = ?",
             (owner_email, folder, message_id),
@@ -315,6 +394,16 @@ def _list_todos(ctx: AppContext, owner_email: str) -> list[TodoItem]:
             (owner_email,),
         ).fetchall()
     return [_todo_row_to_item(ctx, row) for row in rows]
+
+
+def _list_calendar_events(ctx: AppContext, owner_email: str) -> list[CalendarEvent]:
+    with ctx.connect() as conn:
+        rows = conn.execute(
+            "SELECT id, owner_email, message_id, title, starts_at, duration_minutes, created_at, source_action "
+            "FROM calendar_events WHERE owner_email = ? ORDER BY starts_at DESC",
+            (owner_email,),
+        ).fetchall()
+    return [_calendar_row_to_item(ctx, row) for row in rows]
 
 
 def refresh_sent_delivery_state(ctx: AppContext, owner_email: str, message_id: str) -> str:
@@ -541,11 +630,17 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
                 "SELECT id, owner_email, message_id, title, created_at FROM todos WHERE owner_email = ? ORDER BY created_at DESC",
                 (user["email"],),
             ).fetchall()
+            calendar_rows = conn.execute(
+                "SELECT id, owner_email, message_id, title, starts_at, duration_minutes, created_at, source_action "
+                "FROM calendar_events WHERE owner_email = ? ORDER BY starts_at DESC",
+                (user["email"],),
+            ).fetchall()
         return MailboxDashboardResponse(
             inbox=[_mail_row_to_summary(ctx, row) for row in inbox_rows],
             sent=[_mail_row_to_summary(ctx, row) for row in sent_rows],
             drafts=[_mail_row_to_summary(ctx, row) for row in draft_rows],
             todos=[_todo_row_to_item(ctx, row) for row in todo_rows],
+            calendar_events=[_calendar_row_to_item(ctx, row) for row in calendar_rows],
         )
 
     @app.get("/v1/mail/inbox", response_model=list[MailSummary])
@@ -582,16 +677,14 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
 
     @app.post("/v1/mail/send")
     async def send(payload: SendMailRequest, request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-        payload_data = payload.model_dump()
-        if payload_data.get("e2e_envelope") is None:
-            payload_data.pop("e2e_envelope", None)
+        payload_data = await _signed_payload_from_request(request)
         user = verify_authenticated_request(ctx, request, authorization, payload_data)
         enforce_send_limits(ctx, user["email"], _client_ip(request))
         return await dispatch_message(ctx, user["email"], payload)
 
     @app.post("/v1/mail/draft")
     async def draft(payload: DraftRequest, request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-        user = verify_authenticated_request(ctx, request, authorization, payload.model_dump())
+        user = verify_authenticated_request(ctx, request, authorization, await _signed_payload_from_request(request))
         if payload.send_now:
             enforce_send_limits(ctx, user["email"], _client_ip(request))
             if payload.message_id:
@@ -740,7 +833,7 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
 
     @app.post("/v1/mail/send_group")
     async def group_send(payload: GroupSendRequest, request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-        user = verify_authenticated_request(ctx, request, authorization, payload.model_dump())
+        user = verify_authenticated_request(ctx, request, authorization, await _signed_payload_from_request(request))
         with ctx.connect() as conn:
             row = conn.execute(
                 "SELECT members_json FROM groups_store WHERE name = ? AND owner_email = ?",
@@ -768,38 +861,149 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
             data = verify_signed_payload(ctx.config.action_secret, payload.token)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        required_fields = {"message_id", "recipient", "action", "issued_at", "expires_at", "nonce"}
+        missing = [field for field in required_fields if not data.get(field)]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Action token missing fields: {', '.join(sorted(missing))}.")
         if data["recipient"] != user["email"]:
             raise HTTPException(status_code=403, detail="Action token does not belong to this user.")
-        action = data["action"]
-        if action not in {"add_todo", "acknowledge"}:
+        try:
+            issued_at = parse_timestamp(data["issued_at"])
+            expires_at = parse_timestamp(data["expires_at"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Action token time metadata is invalid.") from exc
+        if expires_at <= issued_at:
+            raise HTTPException(status_code=400, detail="Action token time window is invalid.")
+        if expires_at - issued_at > timedelta(hours=ACTION_TOKEN_MAX_LIFETIME_HOURS):
+            raise HTTPException(status_code=400, detail="Action token lifetime is too long.")
+        now = utcnow()
+        if issued_at - now > timedelta(minutes=5):
+            raise HTTPException(status_code=400, detail="Action token issued time is invalid.")
+        if now > expires_at:
+            raise HTTPException(status_code=400, detail="Action token has expired.")
+        action = str(data["action"])
+        if action not in {"add_todo", "add_calendar_event", "acknowledge", "report_phishing"}:
             raise HTTPException(status_code=400, detail="Action not allowed.")
-        if action == "add_todo":
-            todo = TodoItem(
-                id=new_id(),
-                owner_email=user["email"],
-                message_id=data["message_id"],
-                title=data["title"],
-                created_at=isoformat_utc(),
-            )
-            with ctx.connect() as conn:
+        token_hash = ctx.stable_hash(payload.token)
+        with ctx.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            duplicate = conn.execute(
+                "SELECT 1 FROM action_token_uses WHERE token_hash = ? LIMIT 1",
+                (token_hash,),
+            ).fetchone()
+            if duplicate is not None:
+                raise HTTPException(status_code=409, detail="Action token was already used.")
+            message_row = conn.execute(
+                "SELECT mailbox_item_id, subject, body_text, security_flags_json FROM mail_items "
+                "WHERE owner_email = ? AND message_id = ? AND folder = 'inbox' ORDER BY created_at DESC LIMIT 1",
+                (user["email"], data["message_id"]),
+            ).fetchone()
+            if message_row is None:
+                raise HTTPException(status_code=404, detail="Message not found.")
+            message_subject = ctx.decrypt_text(message_row["subject"])
+            message_body = ctx.decrypt_text(message_row["body_text"])
+            executed_status: dict[str, str]
+            if action == "add_todo":
+                todo = TodoItem(
+                    id=new_id(),
+                    owner_email=user["email"],
+                    message_id=data["message_id"],
+                    title=str(data.get("title") or f"Follow up: {(message_subject or 'Message')[:48]}"),
+                    created_at=isoformat_utc(now),
+                )
                 conn.execute(
                     "INSERT INTO todos(id, owner_email, message_id, title, created_at) VALUES (?, ?, ?, ?, ?)",
                     (todo.id, todo.owner_email, todo.message_id, ctx.encrypt_text(todo.title), todo.created_at),
                 )
-            log_event(ctx, "action_add_todo", actor_email=user["email"], message_id=data["message_id"])
-            return {"status": "todo_added", "todo_id": todo.id}
-        with ctx.connect() as conn:
+                log_event(ctx, "action_add_todo", actor_email=user["email"], message_id=data["message_id"])
+                executed_status = {"status": "todo_added", "todo_id": todo.id}
+            elif action == "add_calendar_event":
+                event = CalendarEvent(
+                    id=new_id(),
+                    owner_email=user["email"],
+                    message_id=data["message_id"],
+                    title=str(data.get("title") or _calendar_title_from_subject(message_subject)),
+                    starts_at=_infer_calendar_start(message_subject, message_body),
+                    duration_minutes=30,
+                    created_at=isoformat_utc(now),
+                    source_action="quick_action",
+                )
+                conn.execute(
+                    "INSERT INTO calendar_events(id, owner_email, message_id, title, starts_at, duration_minutes, created_at, source_action) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        event.id,
+                        event.owner_email,
+                        event.message_id,
+                        ctx.encrypt_text(event.title),
+                        event.starts_at,
+                        event.duration_minutes,
+                        event.created_at,
+                        event.source_action,
+                    ),
+                )
+                log_event(ctx, "action_add_calendar_event", actor_email=user["email"], message_id=data["message_id"])
+                executed_status = {"status": "calendar_event_added", "event_id": event.id}
+            elif action == "report_phishing":
+                current_flags = ctx.decrypt_json(message_row["security_flags_json"]) or {}
+                existing_reasons = [
+                    item
+                    for item in current_flags.get("reasons", [])
+                    if isinstance(item, str) and item.strip()
+                ]
+                reasons = list(dict.fromkeys([*existing_reasons, "user_reported_phishing"]))
+                try:
+                    current_score = int(current_flags.get("phishing_score", 0))
+                except (TypeError, ValueError):
+                    current_score = 0
+                updated_flags = {
+                    **current_flags,
+                    "suspicious": True,
+                    "phishing_score": max(current_score, 9),
+                    "reasons": reasons,
+                    "manual_review_requested": True,
+                }
+                conn.execute(
+                    "UPDATE mail_items SET security_flags_json = ?, classification = ?, is_read = 1 WHERE mailbox_item_id = ?",
+                    (
+                        ctx.encrypt_json(updated_flags),
+                        ctx.encrypt_text("Suspicious"),
+                        message_row["mailbox_item_id"],
+                    ),
+                )
+                log_event(
+                    ctx,
+                    "suspicious_mail_detected",
+                    actor_email=user["email"],
+                    owner_email=user["email"],
+                    message_id=data["message_id"],
+                    score=updated_flags["phishing_score"],
+                    reasons=updated_flags["reasons"],
+                    source="user_report",
+                )
+                executed_status = {"status": "phishing_reported", "message_id": data["message_id"]}
+            else:
+                conn.execute(
+                    "UPDATE mail_items SET is_read = 1 WHERE mailbox_item_id = ?",
+                    (message_row["mailbox_item_id"],),
+                )
+                log_event(ctx, "action_acknowledge", actor_email=user["email"], message_id=data["message_id"])
+                executed_status = {"status": "acknowledged", "message_id": data["message_id"]}
             conn.execute(
-                "UPDATE mail_items SET is_read = 1 WHERE owner_email = ? AND message_id = ?",
-                (user["email"], data["message_id"]),
+                "INSERT INTO action_token_uses(token_hash, owner_email, message_id, action, used_at) VALUES (?, ?, ?, ?, ?)",
+                (token_hash, user["email"], data["message_id"], action, isoformat_utc(now)),
             )
-        log_event(ctx, "action_acknowledge", actor_email=user["email"], message_id=data["message_id"])
-        return {"status": "acknowledged", "message_id": data["message_id"]}
+        return executed_status
 
     @app.get("/v1/todos", response_model=list[TodoItem])
     def todos(authorization: str | None = Header(default=None)) -> list[TodoItem]:
         user = get_current_user(ctx, authorization)
         return _list_todos(ctx, user["email"])
+
+    @app.get("/v1/calendar/events", response_model=list[CalendarEvent])
+    def calendar_events(authorization: str | None = Header(default=None)) -> list[CalendarEvent]:
+        user = get_current_user(ctx, authorization)
+        return _list_calendar_events(ctx, user["email"])
 
     @app.get("/v1/mail/search", response_model=SearchResponse)
     def search(q: str, authorization: str | None = Header(default=None)) -> SearchResponse:

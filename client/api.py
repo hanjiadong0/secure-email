@@ -318,6 +318,9 @@ class ApiClient:
     def todos(self) -> Any:
         return self._get("/v1/todos")
 
+    def calendar_events(self) -> Any:
+        return self._get("/v1/calendar/events")
+
     def search(self, query: str) -> Any:
         return self._get("/v1/mail/search", params={"q": query})
 

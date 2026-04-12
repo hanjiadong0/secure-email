@@ -29,10 +29,11 @@ def register_routes(app: FastAPI, config: DomainConfig) -> None:
             "endpoints": {
                 "health": "/health",
                 "auth": ["/v1/auth/register", "/v1/auth/login"],
-                "mail": ["/v1/mail/inbox", "/v1/mail/send", "/v1/mail/recall"],
-                "search": ["/v1/mail/search", "/v1/contacts/autocomplete"],
-            },
-        }
+            "mail": ["/v1/mail/inbox", "/v1/mail/send", "/v1/mail/recall"],
+            "calendar": ["/v1/calendar/events"],
+            "search": ["/v1/mail/search", "/v1/contacts/autocomplete"],
+        },
+    }
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> Response:

@@ -155,11 +155,23 @@ class TodoItem(BaseModel):
     created_at: str
 
 
+class CalendarEvent(BaseModel):
+    id: str
+    owner_email: str
+    message_id: str
+    title: str
+    starts_at: str
+    duration_minutes: int = 30
+    created_at: str
+    source_action: str
+
+
 class MailboxDashboardResponse(BaseModel):
     inbox: list[MailSummary] = Field(default_factory=list)
     sent: list[MailSummary] = Field(default_factory=list)
     drafts: list[MailSummary] = Field(default_factory=list)
     todos: list[TodoItem] = Field(default_factory=list)
+    calendar_events: list[CalendarEvent] = Field(default_factory=list)
 
 
 class SecuritySimulationRequest(BaseModel):

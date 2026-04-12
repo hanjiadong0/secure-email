@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     e2e_key = sub.add_parser("e2e-key")
     e2e_key.add_argument("--email", required=True)
 
-    for name in ["inbox", "sent", "drafts", "todos"]:
+    for name in ["inbox", "sent", "drafts", "todos", "calendar"]:
         cmd = sub.add_parser(name)
         cmd.add_argument("--email", required=True)
 
@@ -134,6 +134,8 @@ def main() -> None:
             print_messages(client.drafts())
         elif args.command == "todos":
             print_json_block(client.todos())
+        elif args.command == "calendar":
+            print_json_block(client.calendar_events())
         elif args.command == "message":
             print_json_block(client.message(args.message_id))
         elif args.command == "send":

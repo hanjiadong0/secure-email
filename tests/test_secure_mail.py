@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from common.config import DomainConfig
-from common.crypto import mac_hex
+from common.crypto import mac_hex, sign_payload
 from common.e2e import build_envelope, decrypt_envelope, generate_identity
 from common.text_features import apply_model_quick_replies, extract_keywords, phishing_flags, quick_reply_suggestions
 from common.utils import json_dumps, new_id
@@ -279,6 +279,124 @@ def test_cross_domain_send_attachment_recall_and_tamper(app_pair):
 
     inbox_after = client_b.get("/v1/mail/inbox", headers={"Authorization": f"Bearer {bob['session_token']}"})
     assert inbox_after.json()[0]["recalled"] is True
+
+
+def test_quick_actions_calendar_and_phishing_report(app_pair):
+    client_a, client_b = app_pair
+    _register(client_a, "alice@a.test")
+    _register(client_b, "bob@b.test")
+    alice = _login(client_a, "alice@a.test")
+    bob = _login(client_b, "bob@b.test")
+
+    send_body = {
+        "to": ["bob@b.test"],
+        "cc": [],
+        "subject": "Team meeting tomorrow",
+        "body_text": "Can we meet tomorrow to review the incident timeline?",
+        "attachment_ids": [],
+        "thread_id": None,
+    }
+    send = client_a.post("/v1/mail/send", json=send_body, headers=_signed_headers(alice, "/v1/mail/send", send_body))
+    assert send.status_code == 200
+    message_id = send.json()["message_id"]
+    _wait_for_message(client_a, message_id)
+    _wait_for_message(client_b, message_id)
+
+    inbox = client_b.get("/v1/mail/inbox", headers={"Authorization": f"Bearer {bob['session_token']}"})
+    assert inbox.status_code == 200
+    message = next(item for item in inbox.json() if item["message_id"] == message_id)
+    actions = {item["action"]: item["token"] for item in message["actions"]}
+    assert {"add_todo", "add_calendar_event", "acknowledge", "report_phishing"}.issubset(actions)
+
+    calendar_body = {"token": actions["add_calendar_event"]}
+    calendar_action = client_b.post(
+        "/v1/actions/execute",
+        json=calendar_body,
+        headers=_signed_headers(bob, "/v1/actions/execute", calendar_body),
+    )
+    assert calendar_action.status_code == 200
+    assert calendar_action.json()["status"] == "calendar_event_added"
+
+    events = client_b.get("/v1/calendar/events", headers={"Authorization": f"Bearer {bob['session_token']}"})
+    assert events.status_code == 200
+    event_rows = events.json()
+    assert len(event_rows) == 1
+    assert event_rows[0]["message_id"] == message_id
+    assert event_rows[0]["title"].startswith("Mail follow-up:")
+
+    phishing_body = {"token": actions["report_phishing"]}
+    phishing_action = client_b.post(
+        "/v1/actions/execute",
+        json=phishing_body,
+        headers=_signed_headers(bob, "/v1/actions/execute", phishing_body),
+    )
+    assert phishing_action.status_code == 200
+    assert phishing_action.json()["status"] == "phishing_reported"
+
+    message_detail = client_b.get(f"/v1/mail/message/{message_id}", headers={"Authorization": f"Bearer {bob['session_token']}"})
+    assert message_detail.status_code == 200
+    security_flags = message_detail.json()["security_flags"]
+    assert security_flags["suspicious"] is True
+    assert "user_reported_phishing" in security_flags["reasons"]
+
+
+def test_quick_action_token_is_single_use(app_pair):
+    client_a, client_b = app_pair
+    _register(client_a, "alice@a.test")
+    _register(client_b, "bob@b.test")
+    alice = _login(client_a, "alice@a.test")
+    bob = _login(client_b, "bob@b.test")
+
+    send_body = {
+        "to": ["bob@b.test"],
+        "cc": [],
+        "subject": "One-click follow-up",
+        "body_text": "Please track this item.",
+        "attachment_ids": [],
+        "thread_id": None,
+    }
+    send = client_a.post("/v1/mail/send", json=send_body, headers=_signed_headers(alice, "/v1/mail/send", send_body))
+    assert send.status_code == 200
+    message_id = send.json()["message_id"]
+    _wait_for_message(client_a, message_id)
+    _wait_for_message(client_b, message_id)
+
+    inbox = client_b.get("/v1/mail/inbox", headers={"Authorization": f"Bearer {bob['session_token']}"})
+    assert inbox.status_code == 200
+    message = next(item for item in inbox.json() if item["message_id"] == message_id)
+    token = next(item["token"] for item in message["actions"] if item["action"] == "add_todo")
+
+    body = {"token": token}
+    first = client_b.post("/v1/actions/execute", json=body, headers=_signed_headers(bob, "/v1/actions/execute", body))
+    assert first.status_code == 200
+    assert first.json()["status"] == "todo_added"
+
+    replay = client_b.post("/v1/actions/execute", json=body, headers=_signed_headers(bob, "/v1/actions/execute", body))
+    assert replay.status_code == 409
+    assert "already used" in replay.json()["detail"].lower()
+
+
+def test_quick_action_token_expiry_is_enforced(app_pair):
+    _, client_b = app_pair
+    _register(client_b, "bob@b.test")
+    bob = _login(client_b, "bob@b.test")
+
+    expired_token = sign_payload(
+        "test-action-secret",
+        {
+            "message_id": "demo-message",
+            "recipient": "bob@b.test",
+            "action": "acknowledge",
+            "title": "Acknowledge message",
+            "issued_at": "2026-04-10T10:00:00+00:00",
+            "expires_at": "2026-04-10T11:00:00+00:00",
+            "nonce": new_id(),
+        },
+    )
+    body = {"token": expired_token}
+    response = client_b.post("/v1/actions/execute", json=body, headers=_signed_headers(bob, "/v1/actions/execute", body))
+    assert response.status_code == 400
+    assert "expired" in response.json()["detail"].lower()
 
 
 def test_phishing_sample_is_flagged(app_pair):

@@ -214,7 +214,7 @@ def page_register(page: Page, email: str, password: str = PASSWORD) -> None:
     page.fill("#registerPassword", password)
     page.fill("#registerConfirmPassword", password)
     page.locator("#registerForm button[type='submit']").click()
-    page.locator(".toast").filter(has_text=f"Registered {email}").first.wait_for(timeout=10000)
+    page.locator(".toast").filter(has_text=f"Account created for {email}").first.wait_for(timeout=10000)
 
 
 def page_login(page: Page, email: str, password: str = PASSWORD) -> None:
@@ -230,7 +230,7 @@ def page_send(page: Page, to: str, subject: str, body: str) -> None:
     page.fill("#composeSubject", subject)
     page.fill("#composeBody", body)
     page.locator("#composeForm button[type='submit']").click()
-    page.locator(".toast").filter(has_text="Mail queued with id").first.wait_for(timeout=15000)
+    page.locator(".toast").filter(has_text="Your message is on its way.").first.wait_for(timeout=15000)
     page.wait_for_timeout(1200)
 
 
@@ -352,8 +352,12 @@ def build_gallery_html(files: list[tuple[str, str]]) -> Path:
 <body>
   <div class="wrap">
     <section class="hero">
-      <h1>Real Frontend Test Screenshots</h1>
-      <p>Actual browser screenshots of the secure-email web UI, captured from live local test scenarios.</p>
+      <h1>Frontend Test Screenshots</h1>
+      <p>Browser evidence for secure-email frontend scenarios, captured from live local test runs.</p>
+    </section>
+    <section class="card">
+      <h2>Current Attachment Rules</h2>
+      <p>All file types are accepted as attachments. Image AI and transform actions are applied only to image attachments.</p>
     </section>
     {sections}
   </div>
@@ -530,7 +534,7 @@ def main() -> None:
             page_login(page_attach_b, "viewer@b.test")
             page_attach_a.set_input_files("#attachmentFile", str(sample_image))
             page_attach_a.click("#uploadAttachmentButton")
-            page_attach_a.locator(".toast").filter(has_text="Uploaded sample.png.").first.wait_for(timeout=15000)
+            page_attach_a.locator(".toast").filter(has_text="Added sample.png to the message.").first.wait_for(timeout=15000)
             page_attach_a.wait_for_timeout(1200)
             page_send(page_attach_a, "viewer@b.test", "Attachment demo", "Attached image for frontend evidence.")
             page_refresh(page_attach_b)
@@ -551,7 +555,7 @@ def main() -> None:
             for _ in range(2):
                 page_dedup.set_input_files("#attachmentFile", str(sample_image))
                 page_dedup.click("#uploadAttachmentButton")
-                page_dedup.locator(".toast").filter(has_text="Uploaded sample.png.").first.wait_for(timeout=15000)
+                page_dedup.locator(".toast").filter(has_text="Added sample.png to the message.").first.wait_for(timeout=15000)
                 page_dedup.wait_for_timeout(1200)
             save_screenshot(page_dedup, "07_storage_dedup_frontend_real.png")
             files_for_gallery.append(("07_storage_dedup_frontend_real.png", "7. Dedup Upload View"))
@@ -579,9 +583,13 @@ def main() -> None:
     (OUTPUT_DIR / "README.md").write_text(
         "\n".join(
             [
-                "# Real Frontend Test Screenshots",
+                "# Frontend Test Screenshots",
                 "",
                 "Captured from the live secure-email web UI with automated local browser interaction.",
+                "",
+                "Current attachment policy in this build:",
+                "- all file types can be uploaded",
+                "- image AI and transforms are image-only",
                 "",
                 *[f"- `{name}`" for name, _ in files_for_gallery],
                 "",

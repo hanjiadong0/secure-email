@@ -128,9 +128,12 @@ Requirement:
 
 Implemented by:
 - Signed quick action tokens in [server/mailbox.py](../server/mailbox.py)
+- Token expiry and one-time-use replay protection in [server/mailbox.py](../server/mailbox.py) and [server/storage.py](../server/storage.py)
 - Current actions:
-  - add TODO
-  - acknowledge message
+  - add TODO follow-up
+  - add calendar event
+  - acknowledge / mark read
+  - report suspicious/phishing message
 
 Requirement:
 - At least 2 intelligent/algorithm-enhanced functions.
