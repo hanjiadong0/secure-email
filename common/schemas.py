@@ -24,6 +24,29 @@ class AuthResponse(BaseModel):
     expires_at: str
 
 
+class PublishKeyRequest(BaseModel):
+    algorithm: str = "ECDH-P256-HKDF-SHA256-AESGCM"
+    curve: str = "P-256"
+    public_key: str
+
+
+class PublishedKey(BaseModel):
+    email: str
+    algorithm: str
+    curve: str
+    public_key: str
+    updated_at: str
+
+
+class KeyResolveRequest(BaseModel):
+    emails: list[str] = Field(default_factory=list)
+
+
+class KeyResolveResponse(BaseModel):
+    keys: list[PublishedKey] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+
+
 class AttachmentUploadRequest(BaseModel):
     filename: str
     content_base64: str
@@ -75,6 +98,8 @@ class MailSummary(BaseModel):
     recalled: bool = False
     recall_status: str | None = None
     is_read: bool = False
+    e2e_encrypted: bool = False
+    e2e_envelope: dict[str, Any] = Field(default_factory=dict)
 
 
 class SendMailRequest(BaseModel):
@@ -84,6 +109,7 @@ class SendMailRequest(BaseModel):
     body_text: str
     attachment_ids: list[str] = Field(default_factory=list)
     thread_id: str | None = None
+    e2e_envelope: dict[str, Any] | None = None
 
 
 class DraftRequest(BaseModel):
@@ -129,6 +155,26 @@ class TodoItem(BaseModel):
     created_at: str
 
 
+class MailboxDashboardResponse(BaseModel):
+    inbox: list[MailSummary] = Field(default_factory=list)
+    sent: list[MailSummary] = Field(default_factory=list)
+    drafts: list[MailSummary] = Field(default_factory=list)
+    todos: list[TodoItem] = Field(default_factory=list)
+
+
+class SecuritySimulationRequest(BaseModel):
+    scenario: str = "full"
+
+
+class SecurityEvidenceResponse(BaseModel):
+    status: str = "unavailable"
+    generated_at: str | None = None
+    metrics: dict[str, int] = Field(default_factory=dict)
+    scenarios: list[dict[str, Any]] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    images: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+
 class ContactSuggestion(BaseModel):
     email: str
     score: float
@@ -156,6 +202,7 @@ class RelayIncomingRequest(BaseModel):
     body_text: str
     created_at: str
     attachments: list[RelayAttachment] = Field(default_factory=list)
+    e2e_envelope: dict[str, Any] | None = None
 
 
 class RelayRecallRequest(BaseModel):

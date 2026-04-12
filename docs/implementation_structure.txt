@@ -18,6 +18,8 @@ The system is a local secure mail prototype with:
 - recall support
 - quick actions and quick replies
 - search and lightweight classification
+- Florence-2-backed attachment analysis
+- optional ECC end-to-end encrypted text mail
 - automated tests
 
 The code is organized so that each responsibility is separated into a
@@ -92,6 +94,13 @@ common/data_security.py
   Holds field-level at-rest protection helpers:
   - symmetric encryption/decryption for sensitive SQLite fields
   - encrypted JSON/text serialization for mailbox/session storage
+
+common/e2e.py
+  Holds optional end-to-end encryption helpers:
+  - ECC keypair generation
+  - ECDH + HKDF key wrapping
+  - AES-GCM content encryption
+  - local envelope decryption
 
 common/schemas.py
   Contains Pydantic request and response models for:
@@ -174,6 +183,7 @@ Important tables include:
 - groups_store
 - todos
 - contacts
+- user_public_keys
 - job_queue
 
 Why this module matters:
@@ -242,6 +252,7 @@ Responsibilities:
 - create logical attachment metadata entries
 - authorize download access
 - prepare attachments for relay to another server
+- expose attachment analysis and transform routes
 
 Storage model:
 
@@ -359,6 +370,31 @@ Responsibilities:
 - fall back safely if the local model is unavailable
 
 
+4.12 server/image_ai.py
+-----------------------
+
+This module handles local image-analysis and transform helpers.
+
+Responsibilities:
+
+- run heuristic attachment risk checks
+- call local Florence-2 review when configured
+- derive attachment labels and summaries
+- produce safe local image transforms
+
+
+4.13 server/e2e_keys.py
+-----------------------
+
+This module handles the end-to-end key directory.
+
+Responsibilities:
+
+- publish authenticated user public keys
+- resolve local and remote recipient public keys
+- expose a relay-safe public-key lookup path between domains
+
+
 5. CLIENT LAYER: client/
 ------------------------
 
@@ -376,6 +412,10 @@ Responsibilities:
 - sign authenticated requests with request ID, sequence, timestamp,
   nonce, and body MAC
 - send GET and POST requests to the server
+- publish E2E public keys
+- resolve recipient E2E keys
+- send optional E2E encrypted mail
+- decrypt E2E envelopes locally
 
 Important behavior:
 
@@ -462,6 +502,8 @@ web/app.js
   - register and login users
   - validate confirm-password registration fields
   - save session state in localStorage
+  - generate and publish browser-side E2E identities
+  - locally decrypt E2E messages
   - compute HMAC request signatures in the browser
   - refresh inbox/sent/drafts/todos
   - upload attachments
@@ -469,6 +511,7 @@ web/app.js
   - run search
   - create/send groups
   - preview attachments
+  - request Florence-2-backed attachment analysis data
   - execute quick replies and quick actions
   - trigger recall
 
@@ -499,6 +542,7 @@ Each config defines:
 - rate limit values
 - recall window
 - attachment size limits
+- optional Florence-2 image model setting
 
 These configs make it easy to start two isolated servers locally.
 
@@ -552,7 +596,7 @@ docs/alerting_and_audit.md
   Explains audit logging and anomaly alerting.
 
 docs/end_to_end_encryption_design.md
-  Records the future end-to-end encryption design direction.
+  Explains the current ECC end-to-end implementation and remaining limits.
 
 docs/malicious_mail_poc.md
   Discusses malicious mail script risk and a safe PoC.
@@ -579,6 +623,8 @@ The current suite covers:
 - CC delivery across domains
 - suspicious-mail flagging
 - attachment deduplication
+- Florence-2 attachment analysis path
+- ECC end-to-end encrypted cross-domain text mail
 - concurrent multi-client send and receive
 - recall
 - tampered quick-action token rejection
@@ -625,7 +671,20 @@ Test style:
 11. An inbound worker stores inbox mail and attachment metadata on the peer domain.
 
 
-10.3 Recall Flow
+10.3 ECC End-to-End Send Flow
+-----------------------------
+
+1. Client creates or loads a local ECC keypair.
+2. Client publishes its public key through server/e2e_keys.py.
+3. Before sending encrypted mail, the client resolves recipient public keys.
+4. The client generates a random AES content key.
+5. The client encrypts subject/body locally.
+6. The client wraps the content key per recipient using ECDH + HKDF.
+7. The server stores placeholder subject/body plus the ciphertext envelope.
+8. Recipient clients decrypt the envelope locally after fetching the message.
+
+
+10.4 Recall Flow
 ----------------
 
 1. Sender submits a signed recall request.
@@ -635,14 +694,15 @@ Test style:
 5. Recall result statuses are returned and logged.
 
 
-10.4 Attachment Flow
+10.5 Attachment Flow
 --------------------
 
 1. Client uploads base64 image content.
 2. server/attachments.py validates type and size.
 3. File is hashed and stored under a generated blob path.
-4. Attachment metadata is stored separately from physical blob content.
-5. Mail items only reference attachment metadata.
+4. Local Florence-2 review can enrich attachment-analysis metadata.
+5. Attachment metadata is stored separately from physical blob content.
+6. Mail items only reference attachment metadata.
 
 
 12. SECURITY STRUCTURE
@@ -659,6 +719,7 @@ The main security layers are:
 - relay MAC verification between servers
 - signed quick action tokens
 - image-only attachment allowlist with magic-byte validation
+- optional ECC end-to-end encrypted text envelopes
 - mailbox ownership checks
 - structured audit logging
 - structured anomaly alerting for high-signal security events
@@ -687,7 +748,7 @@ Important implementation notes:
 
 - demo configs currently use local HTTP, while the documented security
   model expects HTTPS/TLS in a stronger deployment
-- phishing detection is heuristic, not ML-based
+- text phishing detection is heuristic/Ollama-backed, while attachment analysis can use Florence-2 locally
 - search is lightweight and local
 - the system is an educational prototype, not a production mail platform
 

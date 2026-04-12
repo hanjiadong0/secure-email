@@ -1,6 +1,6 @@
 # Smart Secure Email System
 
-A local, security-aware email prototype with two isolated domains, cross-domain delivery, image attachments, recall, quick actions, quick replies, local-Ollama and optional local-Hugging-Face smart features, attachment preview and analysis, encrypted-at-rest mailbox storage, and reproducible tests.
+A local, security-aware email prototype with two isolated domains, cross-domain delivery, image attachments, recall, quick actions, quick replies, local-Ollama smart text analysis, Florence-2-backed attachment review, optional ECC end-to-end encrypted mail, encrypted-at-rest mailbox storage, and reproducible tests.
 
 This project combines the PDF deep-research plan with the current README direction:
 
@@ -32,11 +32,12 @@ The merged target for this repo is:
 - cross-domain mail delivery
 - multiple recipients and group send
 - image attachment upload and download
-- attachment preview, risk analysis, and safe local transforms
+- attachment preview, Florence-2-backed risk analysis, and safe local transforms
 - mail recall with verification rules
 - quick actions with safe server-side validation
 - quick replies and lightweight smart suggestions
-- local LLM smart analysis through Ollama or optional local Hugging Face models
+- local LLM smart analysis through Ollama plus local Florence-2 image review
+- optional ECC end-to-end encrypted text mail
 - keyword extraction plus classification
 - fuzzy mail/contact search
 - brute-force protection
@@ -59,6 +60,7 @@ That means we separate:
 - attachment hashing and deduplication
 - smart analysis like phishing scoring and quick reply generation
 - safe image analysis and transform metadata
+- ECC public-key discovery and ciphertext envelopes for optional end-to-end mail
 
 This is important because concurrent mail send/receive behavior becomes unstable if every slow step runs inline in the same request path.
 

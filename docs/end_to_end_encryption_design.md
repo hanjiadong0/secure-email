@@ -2,17 +2,17 @@
 
 ## Goal
 
-Explore how the current secure email prototype could evolve toward end-to-end encryption while preserving the two-domain architecture.
+Document and explain the current optional end-to-end encryption path that now exists in the secure email prototype.
 
 ## High-Level Design
 
-Each user would own:
+Each user owns:
 - a long-term public/private key pair
 - a public-key directory entry published through the server
 
-Each message send would use hybrid encryption:
+Each encrypted message send uses hybrid encryption:
 1. generate a random message content key
-2. encrypt subject/body/attachment metadata with that content key
+2. encrypt subject/body plaintext with that content key
 3. encrypt the content key separately for each recipient using the recipient public key
 4. store and relay only ciphertext plus encrypted content keys
 
@@ -20,21 +20,32 @@ Each message send would use hybrid encryption:
 
 ### Client
 
-The client would need to:
-- generate and protect user private keys
-- encrypt outgoing content locally
-- decrypt incoming content locally
-- verify sender signatures
+The browser client and CLI now:
+- generate and protect user private keys locally
+- publish public keys through the authenticated key-directory API
+- encrypt outgoing subject/body locally
+- decrypt incoming encrypted text locally
 
 ### Server
 
-The server would still:
+The server still:
 - authenticate users
 - store mailbox metadata
 - relay ciphertext
 - enforce traffic policy
 
-But it would no longer be able to read message body plaintext.
+But it cannot read end-to-end encrypted subject/body plaintext.
+
+## Current Cryptographic Shape
+
+- curve: `P-256`
+- key agreement: ECDH
+- KDF: HKDF-SHA256
+- payload encryption: AES-256-GCM
+- one wrapped content key per recipient
+
+The current implementation stores the envelope inside mailbox rows and relays it
+across domains without decryption.
 
 ## Benefits
 
@@ -50,13 +61,12 @@ This design makes some current features harder:
 - server-side search over plaintext
 - quick reply suggestions based on body text
 
-To preserve those features, they would need to move client-side.
+That tradeoff already appears in the current implementation: encrypted text
+mail is stored with placeholder subject/body on the server, while normal
+non-E2E mail still keeps server-side smart features.
 
-## Practical Recommendation
+## Current Limitation
 
-For this project, end-to-end encryption is best documented as a future extension rather than forced into the current MVP.
-
-Reason:
-- it is compatible with the architecture
-- it raises the design quality
-- but it would significantly change the intelligent-feature pipeline
+- E2E mode is text-only for now
+- image attachments remain transport-protected and storage-encrypted, but not end-to-end encrypted
+- encrypted drafts are not yet supported in the browser UI

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import threading
 from typing import Any
 from urllib.parse import urlparse
 
@@ -27,6 +28,7 @@ RISKY_FILENAME_TOKENS = {
 }
 SUPPORTED_TRANSFORMS = ("anime", "photo_boost", "thumbnail")
 _HF_PIPELINE_CACHE: dict[tuple[str, str, str], Any] = {}
+_HF_PIPELINE_CACHE_LOCK = threading.Lock()
 
 
 def _is_loopback_endpoint(base_url: str) -> bool:
@@ -55,8 +57,9 @@ def _load_image(data: bytes) -> Image.Image:
 
 def _load_huggingface_pipeline(task: str, model: str, device: str) -> Any:
     key = (task, model, device)
-    if key in _HF_PIPELINE_CACHE:
-        return _HF_PIPELINE_CACHE[key]
+    cached = _HF_PIPELINE_CACHE.get(key)
+    if cached is not None:
+        return cached
     try:
         from transformers import pipeline
     except Exception as exc:  # pragma: no cover - depends on optional runtime packages
@@ -65,6 +68,8 @@ def _load_huggingface_pipeline(task: str, model: str, device: str) -> Any:
         ) from exc
 
     kwargs: dict[str, Any] = {"model": model}
+    if "florence-2" in model.lower():
+        kwargs["trust_remote_code"] = True
     normalized_device = device.strip().lower()
     if normalized_device in {"cpu", "-1"}:
         kwargs["device"] = -1
@@ -72,15 +77,70 @@ def _load_huggingface_pipeline(task: str, model: str, device: str) -> Any:
         kwargs["device"] = 0
     elif normalized_device:
         kwargs["device"] = device
-    pipe = pipeline(task, **kwargs)
-    _HF_PIPELINE_CACHE[key] = pipe
-    return pipe
+    with _HF_PIPELINE_CACHE_LOCK:
+        cached = _HF_PIPELINE_CACHE.get(key)
+        if cached is not None:
+            return cached
+        pipe = pipeline(task, **kwargs)
+        _HF_PIPELINE_CACHE[key] = pipe
+        return pipe
+
+
+def _caption_labels_and_risk(caption: str) -> tuple[list[str], int, list[str]]:
+    lowered = caption.lower()
+    labels: list[str] = []
+    reasons: list[str] = []
+    risk_score = 0
+    keywords = {
+        "invoice": "document_invoice",
+        "bill": "document_billing",
+        "login": "login_ui",
+        "password": "credentials_text",
+        "payment": "payment_request",
+        "bank": "banking_reference",
+        "qr": "qr_or_code",
+        "screen": "screenshot",
+        "dialog": "dialog_box",
+        "form": "form_like",
+    }
+    for token, label in keywords.items():
+        if token in lowered:
+            labels.append(label)
+    risky_terms = {
+        "password": ("credentials_visible", 3),
+        "login": ("credential_prompt_ui", 2),
+        "invoice": ("invoice_like_content", 1),
+        "payment": ("payment_language_in_image", 2),
+        "bank": ("banking_language_in_image", 2),
+        "verify": ("verification_language_in_image", 2),
+        "qr": ("qr_code_present", 1),
+    }
+    for token, (reason, score) in risky_terms.items():
+        if token in lowered:
+            reasons.append(reason)
+            risk_score += score
+    return list(dict.fromkeys(labels))[:6], risk_score, reasons[:6]
 
 
 def _huggingface_image_review(config: DomainConfig, image: Image.Image, filename: str) -> dict[str, Any]:
     if not config.hf_vision_model:
         raise RuntimeError("hf_vision_model is not configured.")
-    pipe = _load_huggingface_pipeline("image-classification", config.hf_vision_model, config.hf_device)
+    model_name = config.hf_vision_model
+    if "florence-2" in model_name.lower():
+        pipe = _load_huggingface_pipeline("image-text-to-text", model_name, config.hf_device)
+        prompt = "Describe this email attachment image briefly with security-relevant details."
+        results = pipe(images=image, text=prompt, max_new_tokens=96)
+        record = results[0] if isinstance(results, list) and results else {}
+        caption = str(record.get("generated_text", "")).strip()
+        labels, risk_score, reasons = _caption_labels_and_risk(caption)
+        return {
+            "summary": caption[:180] or f"Florence-2 reviewed {filename}.",
+            "labels": labels or ["florence2_caption"],
+            "suspicious": risk_score >= 4,
+            "risk_score": risk_score,
+            "reasons": reasons,
+        }
+    pipe = _load_huggingface_pipeline("image-classification", model_name, config.hf_device)
     results = pipe(image)
     labels = [
         str(item.get("label", "")).strip().lower()
@@ -172,14 +232,14 @@ def analyze_attachment_image(
         backend = "heuristic_image"
         backend_error: str | None = None
 
-        if config.smart_backend.lower() == "huggingface_local" and config.hf_vision_model:
+        if config.hf_vision_model:
             try:
                 response = _huggingface_image_review(config, image.copy(), filename)
                 labels = list(dict.fromkeys([*labels, *[item for item in response.get("labels", []) if isinstance(item, str)]]))[:6]
                 summary = str(response.get("summary") or summary)[:180]
                 risk_score = max(risk_score, int(response.get("risk_score", 0)))
                 reasons = list(dict.fromkeys([*reasons, *[item for item in response.get("reasons", []) if isinstance(item, str)]]))[:8]
-                backend = "huggingface_local"
+                backend = "huggingface_local_florence2" if "florence-2" in config.hf_vision_model.lower() else "huggingface_local"
                 if bool(response.get("suspicious")) and risk_score < 6:
                     risk_score = 6
             except Exception as exc:

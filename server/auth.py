@@ -12,6 +12,9 @@ from server.rate_limit import check_login_lockout, clear_login_failures, record_
 from server.storage import AppContext
 
 
+SESSION_TOUCH_INTERVAL_SECONDS = 15
+
+
 def _client_ip(request: Request) -> str:
     if request.client and request.client.host:
         return request.client.host
@@ -25,32 +28,43 @@ def _parse_token(authorization: str | None) -> str:
 
 
 def _load_user_row(ctx: AppContext, email: str):
+    email_hash = ctx.stable_hash(email)
     with ctx.connect() as conn:
-        return conn.execute("SELECT id, email, password_hash FROM users WHERE email = ?", (email,)).fetchone()
+        return conn.execute("SELECT id, email, password_hash FROM users WHERE email_hash = ?", (email_hash,)).fetchone()
 
 
 def get_current_user(ctx: AppContext, authorization: str | None) -> dict[str, str]:
     token = _parse_token(authorization)
+    token_hash = ctx.stable_hash(token)
+    now = utcnow()
     with ctx.connect() as conn:
         row = conn.execute(
             "SELECT users.id AS user_id, users.email AS email, sessions.expires_at AS expires_at, "
-            "sessions.session_key AS session_key, sessions.last_seq_no AS last_seq_no "
+            "sessions.last_seen AS last_seen, sessions.session_key AS session_key, sessions.last_seq_no AS last_seq_no "
             "FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token = ?",
-            (token,),
+            (token_hash,),
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=401, detail="Invalid session token.")
-        if parse_timestamp(row["expires_at"]) <= utcnow():
+        expires_at = parse_timestamp(row["expires_at"])
+        if expires_at <= now:
             raise HTTPException(status_code=401, detail="Session expired.")
-        rolling = isoformat_utc(utcnow() + timedelta(minutes=ctx.config.session_ttl_minutes))
-        conn.execute(
-            "UPDATE sessions SET last_seen = ?, expires_at = ? WHERE token = ?",
-            (isoformat_utc(), rolling, token),
+        last_seen = parse_timestamp(row["last_seen"])
+        should_touch = (
+            (now - last_seen).total_seconds() >= SESSION_TOUCH_INTERVAL_SECONDS
+            or (expires_at - now).total_seconds() <= SESSION_TOUCH_INTERVAL_SECONDS * 2
         )
+        if should_touch:
+            rolling = isoformat_utc(now + timedelta(minutes=ctx.config.session_ttl_minutes))
+            conn.execute(
+                "UPDATE sessions SET last_seen = ?, expires_at = ? WHERE token = ?",
+                (isoformat_utc(now), rolling, token_hash),
+            )
     return {
         "user_id": str(row["user_id"]),
-        "email": row["email"],
+        "email": ctx.decrypt_text(row["email"]),
         "token": token,
+        "token_hash": token_hash,
         "session_id": token,
         "session_key": ctx.decrypt_text(row["session_key"]),
         "last_seq_no": str(row["last_seq_no"]),
@@ -103,7 +117,7 @@ def verify_authenticated_request(
     with ctx.connect() as conn:
         row = conn.execute(
             "SELECT last_seq_no FROM sessions WHERE token = ?",
-            (user["token"],),
+            (user["token_hash"],),
         ).fetchone()
         current_seq = int(row["last_seq_no"]) if row else 0
         if seq_no <= current_seq:
@@ -111,7 +125,7 @@ def verify_authenticated_request(
             raise HTTPException(status_code=409, detail="Sequence replay detected.")
         duplicate = conn.execute(
             "SELECT 1 FROM request_guards WHERE session_token = ? AND (request_id = ? OR nonce = ?) LIMIT 1",
-            (user["token"], request_id, nonce),
+            (user["token_hash"], request_id, nonce),
         ).fetchone()
         if duplicate is not None:
             log_event(ctx, "request_replay_rejected", actor_email=user["email"], path=request.url.path, reason="duplicate_request")
@@ -120,11 +134,11 @@ def verify_authenticated_request(
         conn.execute("DELETE FROM request_guards WHERE created_at < ?", (cutoff,))
         conn.execute(
             "INSERT INTO request_guards(session_token, request_id, nonce, seq_no, created_at) VALUES (?, ?, ?, ?, ?)",
-            (user["token"], request_id, nonce, seq_no, isoformat_utc()),
+            (user["token_hash"], request_id, nonce, seq_no, isoformat_utc()),
         )
         conn.execute(
             "UPDATE sessions SET last_seq_no = ? WHERE token = ?",
-            (seq_no, user["token"]),
+            (seq_no, user["token_hash"]),
         )
     return user
 
@@ -137,13 +151,19 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
             raise HTTPException(status_code=400, detail=f"Email must belong to {ctx.config.domain}.")
         if payload.confirm_password is not None and payload.password != payload.confirm_password:
             raise HTTPException(status_code=400, detail="Password confirmation does not match.")
+        email_hash = ctx.stable_hash(email)
         with ctx.connect() as conn:
-            existing = conn.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone()
+            existing = conn.execute("SELECT 1 FROM users WHERE email_hash = ?", (email_hash,)).fetchone()
             if existing:
                 raise HTTPException(status_code=409, detail="User already exists.")
             conn.execute(
-                "INSERT INTO users(email, password_hash, created_at) VALUES (?, ?, ?)",
-                (email, hash_password(payload.password), isoformat_utc()),
+                "INSERT INTO users(email, email_hash, password_hash, created_at) VALUES (?, ?, ?, ?)",
+                (
+                    ctx.encrypt_text(email),
+                    email_hash,
+                    ctx.encrypt_text(hash_password(payload.password)),
+                    isoformat_utc(),
+                ),
             )
         log_event(ctx, "register", actor_email=email, ip=_client_ip(request))
         return {"status": "registered", "email": email}
@@ -154,7 +174,8 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
         ip_address = _client_ip(request)
         check_login_lockout(ctx, email, ip_address)
         user = _load_user_row(ctx, email)
-        if user is None or not verify_password(user["password_hash"], payload.password):
+        stored_password_hash = ctx.decrypt_text(user["password_hash"]) if user else ""
+        if user is None or not verify_password(stored_password_hash, payload.password):
             retry_after = record_login_failure(ctx, email, ip_address)
             log_event(ctx, "login_failed", actor_email=email, ip=ip_address)
             if retry_after is not None:
@@ -167,13 +188,14 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
             raise HTTPException(status_code=401, detail="Invalid credentials.")
         clear_login_failures(ctx, email, ip_address)
         token = new_session_token()
+        token_hash = ctx.stable_hash(token)
         session_key = new_session_token()
         expires_at = isoformat_utc(utcnow() + timedelta(minutes=ctx.config.session_ttl_minutes))
         with ctx.connect() as conn:
             conn.execute(
                 "INSERT INTO sessions(token, user_id, session_key, expires_at, created_at, last_seen, last_seq_no) "
                 "VALUES (?, ?, ?, ?, ?, ?, 0)",
-                (token, user["id"], ctx.encrypt_text(session_key), expires_at, isoformat_utc(), isoformat_utc()),
+                (token_hash, user["id"], ctx.encrypt_text(session_key), expires_at, isoformat_utc(), isoformat_utc()),
             )
         log_event(ctx, "login_success", actor_email=email, ip=ip_address)
         return AuthResponse(

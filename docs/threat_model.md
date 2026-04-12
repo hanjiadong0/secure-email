@@ -119,6 +119,7 @@ Mitigations:
 - escaped browser-side mail rendering for message text
 - preview and transform routes still require normal attachment authorization
 - transformed images are re-encoded server-side so metadata like EXIF is dropped
+- optional E2E mail uses client-held ECC private keys, so the server only sees ciphertext for encrypted text mail
 
 ## Residual Risk
 
@@ -129,3 +130,4 @@ This repo is a security-conscious prototype, not a production mail platform. Res
 - advanced phishing / malware controls
 - full queue reliability and recovery
 - stronger privacy / retention controls
+- E2E mode is currently text-only, so attachments remain outside end-to-end protection

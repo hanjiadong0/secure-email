@@ -3,6 +3,8 @@ const STORAGE_KEY = `secure-email:web:${window.location.origin}`;
 const state = {
   domain: "",
   session: null,
+  refreshPromise: null,
+  securityEvidence: null,
   activeMailbox: "inbox",
   mailboxes: {
     inbox: [],
@@ -31,6 +33,8 @@ async function initialize() {
   bindUi();
   restoreSession();
   syncSessionCard();
+  syncComposeMode();
+  renderSecurityEvidence();
   renderAttachments();
   renderMailboxTabs();
   renderMailboxList();
@@ -59,6 +63,8 @@ function cacheUi() {
   ui.composeCc = document.getElementById("composeCc");
   ui.composeSubject = document.getElementById("composeSubject");
   ui.composeBody = document.getElementById("composeBody");
+  ui.composeE2E = document.getElementById("composeE2E");
+  ui.composeE2EHint = document.getElementById("composeE2EHint");
   ui.attachmentFile = document.getElementById("attachmentFile");
   ui.uploadAttachmentButton = document.getElementById("uploadAttachmentButton");
   ui.saveDraftButton = document.getElementById("saveDraftButton");
@@ -76,6 +82,11 @@ function cacheUi() {
   ui.groupSendName = document.getElementById("groupSendName");
   ui.groupSendSubject = document.getElementById("groupSendSubject");
   ui.groupSendBody = document.getElementById("groupSendBody");
+  ui.runSecuritySimulationButton = document.getElementById("runSecuritySimulationButton");
+  ui.refreshSecurityEvidenceButton = document.getElementById("refreshSecurityEvidenceButton");
+  ui.securitySummary = document.getElementById("securitySummary");
+  ui.securityAttackerDefenderImage = document.getElementById("securityAttackerDefenderImage");
+  ui.securityScenarioMatrixImage = document.getElementById("securityScenarioMatrixImage");
   ui.mailboxTabs = document.getElementById("mailboxTabs");
   ui.mailboxList = document.getElementById("mailboxList");
   ui.detailView = document.getElementById("detailView");
@@ -96,6 +107,7 @@ function bindUi() {
     event.preventDefault();
     void handleSendMail();
   });
+  ui.composeE2E.addEventListener("change", syncComposeMode);
   ui.uploadAttachmentButton.addEventListener("click", () => {
     void handleUploadAttachment();
   });
@@ -118,6 +130,12 @@ function bindUi() {
   ui.groupSendForm.addEventListener("submit", (event) => {
     event.preventDefault();
     void handleGroupSend();
+  });
+  ui.runSecuritySimulationButton?.addEventListener("click", () => {
+    void handleRunSecuritySimulation();
+  });
+  ui.refreshSecurityEvidenceButton?.addEventListener("click", () => {
+    void refreshSecurityEvidence();
   });
   ui.mailboxTabs.addEventListener("click", (event) => {
     const button = event.target.closest("[data-mailbox]");
@@ -152,9 +170,9 @@ async function loadHealth() {
     const data = await fetchJson("/health");
     state.domain = data.domain;
     ui.domainBadge.textContent = data.domain;
-    ui.serviceStatus.textContent = data.status.toUpperCase();
+    ui.serviceStatus.textContent = data.status === "ok" ? "Ready" : data.status.toUpperCase();
   } catch (error) {
-    ui.serviceStatus.textContent = "OFFLINE";
+    ui.serviceStatus.textContent = "Offline";
     showToast(normalizeError(error), true);
   }
 }
@@ -181,8 +199,97 @@ function persistSession() {
 
 function syncSessionCard() {
   ui.sessionUser.textContent = state.session ? state.session.email : "Guest";
-  ui.sessionSeq.textContent = state.session ? String(state.session.seq_no) : "0";
+  if (ui.sessionSeq) {
+    ui.sessionSeq.textContent = state.session ? String(state.session.seq_no) : "0";
+  }
   ui.logoutButton.disabled = !state.session;
+  if (ui.runSecuritySimulationButton) {
+    ui.runSecuritySimulationButton.disabled = !state.session;
+  }
+  if (ui.refreshSecurityEvidenceButton) {
+    ui.refreshSecurityEvidenceButton.disabled = !state.session;
+  }
+}
+
+function syncComposeMode() {
+  const e2eEnabled = Boolean(ui.composeE2E?.checked);
+  if (ui.attachmentFile) {
+    ui.attachmentFile.disabled = e2eEnabled;
+  }
+  if (ui.uploadAttachmentButton) {
+    ui.uploadAttachmentButton.disabled = e2eEnabled;
+  }
+  if (ui.composeE2EHint) {
+    ui.composeE2EHint.textContent = e2eEnabled
+      ? "End-to-end encryption is on. Your browser will encrypt the subject and message locally. Attachments are off in this mode for now."
+      : "You can add attachments while standard sending is active.";
+  }
+}
+
+async function ensureE2EIdentityPublished() {
+  if (!state.session) {
+    return null;
+  }
+  if (!state.session.e2e_public_key || !state.session.e2e_private_jwk) {
+    const identity = await generateBrowserE2EIdentity();
+    state.session.e2e_public_key = identity.publicKey;
+    state.session.e2e_private_jwk = identity.privateJwk;
+    persistSession();
+  }
+  if (state.session.e2e_published_public_key !== state.session.e2e_public_key) {
+    await signedPost("/v1/keys/publish", {
+      algorithm: "ECDH-P256-HKDF-SHA256-AESGCM",
+      curve: "P-256",
+      public_key: state.session.e2e_public_key,
+    });
+    state.session.e2e_published_public_key = state.session.e2e_public_key;
+    persistSession();
+  }
+  return {
+    publicKey: state.session.e2e_public_key,
+    privateJwk: state.session.e2e_private_jwk,
+  };
+}
+
+async function generateBrowserE2EIdentity() {
+  const pair = await window.crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"]
+  );
+  const publicRaw = await window.crypto.subtle.exportKey("raw", pair.publicKey);
+  const privateJwk = await window.crypto.subtle.exportKey("jwk", pair.privateKey);
+  return {
+    publicKey: bytesToBase64Url(new Uint8Array(publicRaw)),
+    privateJwk,
+  };
+}
+
+async function hydrateMailbox(messages) {
+  return Promise.all((messages || []).map((message) => hydrateMessage(message)));
+}
+
+async function hydrateMessage(message) {
+  if (!message?.e2e_encrypted || !state.session?.e2e_private_jwk) {
+    return message;
+  }
+  try {
+    const decrypted = await decryptEnvelopeForSession(message.e2e_envelope);
+    if (decrypted) {
+      message.subject = decrypted.subject;
+      message.body_text = decrypted.body_text;
+      message.security_flags = {
+        ...(message.security_flags || {}),
+        e2e_decrypted_local: true,
+      };
+    }
+  } catch (error) {
+    message.security_flags = {
+      ...(message.security_flags || {}),
+      e2e_decrypt_error: normalizeError(error),
+    };
+  }
+  return message;
 }
 
 async function handleRegister() {
@@ -190,11 +297,11 @@ async function handleRegister() {
   const password = ui.registerPassword.value;
   const confirmPassword = ui.registerConfirmPassword.value;
   if (!email || !password || !confirmPassword) {
-    showToast("Registration needs email, password, and confirm password.", true);
+    showToast("Please enter your email, password, and password confirmation.", true);
     return;
   }
   if (password !== confirmPassword) {
-    showToast("Password confirmation does not match.", true);
+    showToast("The password confirmation does not match.", true);
     return;
   }
   await runClientGuard("register", async () => {
@@ -204,7 +311,7 @@ async function handleRegister() {
     });
     ui.loginEmail.value = email;
     ui.registerForm.reset();
-    showToast(`Registered ${result.email}. You can log in now.`);
+    showToast(`Account created for ${result.email}. You can sign in now.`);
   });
 }
 
@@ -212,10 +319,18 @@ async function handleLogin() {
   const email = ui.loginEmail.value.trim();
   const password = ui.loginPassword.value;
   if (!email || !password) {
-    showToast("Login needs both email and password.", true);
+    showToast("Please enter both email and password.", true);
     return;
   }
   await runClientGuard("login", async () => {
+    const preservedIdentity =
+      state.session?.email === email
+        ? {
+            e2e_public_key: state.session.e2e_public_key,
+            e2e_private_jwk: state.session.e2e_private_jwk,
+            e2e_published_public_key: state.session.e2e_published_public_key,
+          }
+        : {};
     const data = await fetchJson("/v1/auth/login", {
       method: "POST",
       body: { email, password },
@@ -226,18 +341,22 @@ async function handleLogin() {
       session_token: data.session_token,
       session_key: data.session_key,
       seq_no: 0,
+      ...preservedIdentity,
     };
     persistSession();
+    await ensureE2EIdentityPublished();
     syncSessionCard();
     ui.loginForm.reset();
     state.activeMailbox = "inbox";
     await refreshAll();
-    showToast(`Logged in as ${email}.`);
+    showToast(`Signed in as ${email}.`);
   });
 }
 
 function handleLogout() {
   state.session = null;
+  state.refreshPromise = null;
+  state.securityEvidence = null;
   state.mailboxes = { inbox: [], sent: [], drafts: [], search: [] };
   state.todos = [];
   state.searchContacts = [];
@@ -250,43 +369,134 @@ function handleLogout() {
   renderMailboxTabs();
   renderMailboxList();
   renderDetail();
-  showToast("Logged out.");
+  renderSecurityEvidence();
+  showToast("Signed out.");
 }
 
 async function refreshAll() {
   if (!requireSession()) {
     return;
   }
-  try {
-    const [inbox, sent, drafts, todos] = await Promise.all([
-      authGet("/v1/mail/inbox"),
-      authGet("/v1/mail/sent"),
-      authGet("/v1/mail/drafts"),
-      authGet("/v1/todos"),
-    ]);
-    state.mailboxes.inbox = inbox;
-    state.mailboxes.sent = sent;
-    state.mailboxes.drafts = drafts;
-    state.todos = todos;
-    if (!lookupSelectedMessage() && inbox.length) {
-      state.selectedMessageId = inbox[0].message_id;
-    }
-    renderMailboxTabs();
-    renderMailboxList();
-    renderDetail();
-    syncSessionCard();
-  } catch (error) {
-    showToast(normalizeError(error), true);
+  if (state.refreshPromise) {
+    return state.refreshPromise;
   }
+  state.refreshPromise = (async () => {
+    try {
+      await ensureE2EIdentityPublished();
+      const dashboard = await authGet("/v1/mail/dashboard");
+      state.mailboxes.inbox = await hydrateMailbox(dashboard.inbox || []);
+      state.mailboxes.sent = await hydrateMailbox(dashboard.sent || []);
+      state.mailboxes.drafts = await hydrateMailbox(dashboard.drafts || []);
+      state.todos = dashboard.todos || [];
+      if (!lookupSelectedMessage() && state.mailboxes.inbox.length) {
+        state.selectedMessageId = state.mailboxes.inbox[0].message_id;
+      }
+      renderMailboxTabs();
+      renderMailboxList();
+      renderDetail();
+      await refreshSecurityEvidence({ silent: true });
+      syncSessionCard();
+    } catch (error) {
+      showToast(normalizeError(error), true);
+    } finally {
+      state.refreshPromise = null;
+    }
+  })();
+  return state.refreshPromise;
+}
+
+async function handleRunSecuritySimulation() {
+  if (!requireSession()) {
+    return;
+  }
+  await runClientGuard("security_simulation", async () => {
+    const report = await signedPost("/v1/security/simulate", { scenario: "full" });
+    state.securityEvidence = report;
+    renderSecurityEvidence();
+    showToast("Security simulation completed and evidence was refreshed.");
+  });
+}
+
+async function refreshSecurityEvidence(options = {}) {
+  if (!state.session) {
+    state.securityEvidence = null;
+    renderSecurityEvidence();
+    return null;
+  }
+  try {
+    const report = await authGet("/v1/security/evidence");
+    state.securityEvidence = report;
+    renderSecurityEvidence();
+    return report;
+  } catch (error) {
+    if (!options.silent) {
+      showToast(normalizeError(error), true);
+    }
+    return null;
+  }
+}
+
+function renderSecurityEvidence() {
+  if (!ui.securitySummary) {
+    return;
+  }
+  const report = state.securityEvidence;
+  if (!report || report.status === "unavailable") {
+    ui.securitySummary.textContent = "No security evidence generated yet. Run the simulation after signing in.";
+    setSecurityEvidenceImage(ui.securityAttackerDefenderImage, null);
+    setSecurityEvidenceImage(ui.securityScenarioMatrixImage, null);
+    return;
+  }
+  if (report.status !== "ok") {
+    ui.securitySummary.textContent = "Security evidence is currently unavailable. Please run the simulation again.";
+    setSecurityEvidenceImage(ui.securityAttackerDefenderImage, null);
+    setSecurityEvidenceImage(ui.securityScenarioMatrixImage, null);
+    return;
+  }
+  const metrics = report.metrics || {};
+  const defenderRate = metrics.defender_success_rate_percent ?? 0;
+  const totalAttempts = metrics.total_attempts ?? 0;
+  const blocked = metrics.blocked ?? 0;
+  const detected = metrics.detected ?? 0;
+  const attackerSuccess = metrics.attacker_success ?? 0;
+  ui.securitySummary.textContent =
+    `Generated ${formatTime(report.generated_at || "")}. ` +
+    `Defender success ${defenderRate}% across ${totalAttempts} attacks ` +
+    `(blocked ${blocked}, detected ${detected}, attacker success ${attackerSuccess}).`;
+  setSecurityEvidenceImage(
+    ui.securityAttackerDefenderImage,
+    report.images?.attacker_vs_defender?.url || null
+  );
+  setSecurityEvidenceImage(
+    ui.securityScenarioMatrixImage,
+    report.images?.scenario_matrix?.url || null
+  );
+}
+
+function setSecurityEvidenceImage(node, url) {
+  if (!node) {
+    return;
+  }
+  if (!url) {
+    node.removeAttribute("src");
+    node.style.display = "none";
+    return;
+  }
+  node.src = `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`;
+  node.style.display = "block";
 }
 
 async function handleUploadAttachment() {
   if (!requireSession()) {
     return;
   }
+  if (ui.composeE2E.checked) {
+    showToast("Encrypted message mode is text-only right now, so attachment uploads are unavailable.", true);
+    return;
+  }
   const file = ui.attachmentFile.files?.[0];
   if (!file) {
-    showToast("Choose a PNG or JPEG file first.", true);
+    showToast("Choose a file first.", true);
     return;
   }
   const contentBase64 = await fileToBase64(file);
@@ -296,7 +506,7 @@ async function handleUploadAttachment() {
     state.composeAttachments.push(attachment);
     renderAttachments();
     ui.attachmentFile.value = "";
-    showToast(`Uploaded ${attachment.filename}.`);
+    showToast(`Added ${attachment.filename} to the message.`);
   });
 }
 
@@ -304,7 +514,11 @@ async function handleSendMail() {
   if (!requireSession()) {
     return;
   }
-  const body = buildComposeBody();
+  if (ui.composeE2E.checked && state.composeAttachments.length) {
+    showToast("Encrypted sending is text-only for now. Remove attachments before sending.", true);
+    return;
+  }
+  const body = await buildComposeBody();
   await runClientGuard("send_mail", async () => {
     const result = await signedPost("/v1/mail/send", body);
     clearCompose();
@@ -314,7 +528,7 @@ async function handleSendMail() {
     renderMailboxTabs();
     renderMailboxList();
     renderDetail();
-    showToast(`Mail queued with id ${result.message_id}.`);
+    showToast("Your message is on its way.");
   });
 }
 
@@ -322,7 +536,12 @@ async function handleSaveDraft() {
   if (!requireSession()) {
     return;
   }
-  const body = { ...buildComposeBody(), message_id: null, send_now: false };
+  if (ui.composeE2E.checked) {
+    showToast("Encrypted drafts are not available in the browser yet.", true);
+    return;
+  }
+  const composeBody = await buildComposeBody();
+  const body = { ...composeBody, message_id: null, send_now: false };
   await runClientGuard("save_draft", async () => {
     const result = await signedPost("/v1/mail/draft", body);
     await refreshAll();
@@ -331,13 +550,14 @@ async function handleSaveDraft() {
     renderMailboxTabs();
     renderMailboxList();
     renderDetail();
-    showToast(`Draft saved with id ${result.message_id}.`);
+    showToast("Draft saved.");
   });
 }
 
 function clearCompose() {
   ui.composeForm.reset();
   state.composeAttachments = [];
+  syncComposeMode();
   renderAttachments();
 }
 
@@ -347,18 +567,18 @@ async function handleSearch() {
   }
   const query = ui.searchQuery.value.trim();
   if (!query) {
-    showToast("Enter a search query first.", true);
+    showToast("Enter something to search for first.", true);
     return;
   }
   try {
     const result = await authGet("/v1/mail/search", { q: query });
-    state.mailboxes.search = result.messages;
+    state.mailboxes.search = await hydrateMailbox(result.messages);
     state.searchContacts = result.contacts;
     state.activeMailbox = "search";
     renderSearchContacts();
     renderMailboxTabs();
     renderMailboxList();
-    showToast(`Search returned ${result.messages.length} messages.`);
+    showToast(`Found ${result.messages.length} matching messages.`);
   } catch (error) {
     showToast(normalizeError(error), true);
   }
@@ -383,13 +603,13 @@ async function handleGroupCreate() {
   const name = ui.groupName.value.trim();
   const members = csv(ui.groupMembers.value);
   if (!name) {
-    showToast("Group name is required.", true);
+    showToast("Please enter a name for the list.", true);
     return;
   }
   await runClientGuard("group_create", async () => {
     await signedPost("/v1/groups/create", { name, members });
     ui.groupCreateForm.reset();
-    showToast(`Saved group ${name}.`);
+    showToast(`Saved the list ${name}.`);
   });
 }
 
@@ -404,14 +624,14 @@ async function handleGroupSend() {
     attachment_ids: state.composeAttachments.map((attachment) => attachment.id),
   };
   if (!body.group_name || !body.subject || !body.body_text) {
-    showToast("Group send needs name, subject, and body.", true);
+    showToast("Sending to a list needs the list name, subject, and message body.", true);
     return;
   }
   await runClientGuard("group_send", async () => {
     await signedPost("/v1/mail/send_group", body);
     ui.groupSendForm.reset();
     await refreshAll();
-    showToast(`Sent mail to group ${body.group_name}.`);
+    showToast(`Sent the message to ${body.group_name}.`);
   });
 }
 
@@ -429,15 +649,15 @@ async function handleDetailAction(node) {
       await runClientGuard("mark_read", async () => {
         await signedPost(`/v1/mail/mark_read/${message.message_id}`, { message_id: message.message_id });
         await refreshAll();
-        showToast("Message marked as read.");
+        showToast("Marked as read.");
       });
       return;
     }
     if (action === "recall") {
       await runClientGuard("recall", async () => {
-        const result = await signedPost("/v1/mail/recall", { message_id: message.message_id });
+        await signedPost("/v1/mail/recall", { message_id: message.message_id });
         await refreshAll();
-        showToast(`Recall result: ${JSON.stringify(result.statuses)}`);
+        showToast("Recall request processed.");
       });
       return;
     }
@@ -453,7 +673,7 @@ async function handleDetailAction(node) {
           thread_id: message.thread_id,
         });
         await refreshAll();
-        showToast("Quick reply sent.");
+        showToast("Reply sent.");
       });
       return;
     }
@@ -462,13 +682,13 @@ async function handleDetailAction(node) {
       await runClientGuard("execute_action", async () => {
         await signedPost("/v1/actions/execute", { token });
         await refreshAll();
-        showToast("Quick action executed.");
+        showToast("Action completed.");
       });
       return;
     }
     if (action === "load-draft") {
       fillComposeFromMessage(message);
-      showToast("Draft loaded into composer.");
+      showToast("Draft opened in the message form.");
       return;
     }
     if (action === "preview-attachment") {
@@ -492,50 +712,190 @@ function fillComposeFromMessage(message) {
   ui.composeCc.value = message.cc.join(", ");
   ui.composeSubject.value = message.subject;
   ui.composeBody.value = message.body_text;
+  ui.composeE2E.checked = Boolean(message.e2e_encrypted);
   state.composeAttachments = [...message.attachments];
+  syncComposeMode();
   renderAttachments();
 }
 
-function buildComposeBody() {
+async function buildComposeBody() {
+  const to = csv(ui.composeTo.value);
+  const cc = csv(ui.composeCc.value);
+  const subject = ui.composeSubject.value.trim();
+  const bodyText = ui.composeBody.value.trim();
+  if (ui.composeE2E.checked) {
+    const envelope = await buildE2EEnvelope(to, cc, subject, bodyText);
+    return {
+      to,
+      cc,
+      subject: "[End-to-end encrypted message]",
+      body_text: "",
+      attachment_ids: [],
+      thread_id: null,
+      e2e_envelope: envelope,
+    };
+  }
   return {
-    to: csv(ui.composeTo.value),
-    cc: csv(ui.composeCc.value),
-    subject: ui.composeSubject.value.trim(),
-    body_text: ui.composeBody.value.trim(),
+    to,
+    cc,
+    subject,
+    body_text: bodyText,
     attachment_ids: state.composeAttachments.map((attachment) => attachment.id),
     thread_id: null,
+    e2e_envelope: null,
   };
+}
+
+async function buildE2EEnvelope(to, cc, subject, bodyText) {
+  if (!window.crypto?.subtle) {
+    throw new Error("This browser does not support the Web Crypto APIs needed for E2E encryption.");
+  }
+  const identity = await ensureE2EIdentityPublished();
+  const recipients = [...new Set([...to, ...cc])];
+  const resolved = await signedPost("/v1/keys/resolve", { emails: recipients });
+  if (resolved.missing?.length) {
+    throw new Error(`Missing E2E public keys for: ${resolved.missing.join(", ")}`);
+  }
+  const recipientMap = Object.fromEntries((resolved.keys || []).map((item) => [item.email, item.public_key]));
+  recipientMap[state.session.email] = identity.publicKey;
+
+  const ephemeral = await window.crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"]
+  );
+  const ephemeralPublicRaw = new Uint8Array(await window.crypto.subtle.exportKey("raw", ephemeral.publicKey));
+  const contentKeyBytes = randomBytes(32);
+  const payloadNonce = randomBytes(12);
+  const contentKey = await window.crypto.subtle.importKey(
+    "raw",
+    contentKeyBytes,
+    { name: "AES-GCM" },
+    false,
+    ["encrypt", "decrypt"]
+  );
+  const payloadPlaintext = encoder().encode(
+    JSON.stringify({ subject, body_text: bodyText })
+  );
+  const payloadCiphertext = new Uint8Array(
+    await window.crypto.subtle.encrypt({ name: "AES-GCM", iv: payloadNonce }, contentKey, payloadPlaintext)
+  );
+  const recipientKeys = {};
+  for (const [email, publicKeyB64] of Object.entries(recipientMap)) {
+    const recipientPublic = await importRecipientPublicKey(publicKeyB64);
+    const sharedBits = await window.crypto.subtle.deriveBits(
+      { name: "ECDH", public: recipientPublic },
+      ephemeral.privateKey,
+      256
+    );
+    const salt = randomBytes(16);
+    const wrapKey = await deriveWrapKey(sharedBits, salt);
+    const wrapNonce = randomBytes(12);
+    const wrappedKey = new Uint8Array(
+      await window.crypto.subtle.encrypt({ name: "AES-GCM", iv: wrapNonce }, wrapKey, contentKeyBytes)
+    );
+    recipientKeys[email] = {
+      salt_b64: bytesToBase64Url(salt),
+      nonce_b64: bytesToBase64Url(wrapNonce),
+      wrapped_key_b64: bytesToBase64Url(wrappedKey),
+    };
+  }
+  return {
+    version: "ecc-p256-aesgcm-v1",
+    algorithm: "ECDH-P256-HKDF-SHA256-AESGCM",
+    curve: "P-256",
+    ephemeral_public_key: bytesToBase64Url(ephemeralPublicRaw),
+    payload_nonce_b64: bytesToBase64Url(payloadNonce),
+    payload_ciphertext_b64: bytesToBase64Url(payloadCiphertext),
+    recipient_keys: recipientKeys,
+  };
+}
+
+async function decryptEnvelopeForSession(envelope) {
+  if (!envelope || !state.session?.e2e_private_jwk) {
+    return null;
+  }
+  const recipientEntry = envelope.recipient_keys?.[state.session.email];
+  if (!recipientEntry) {
+    throw new Error("No wrapped key for the active user.");
+  }
+  const privateKey = await window.crypto.subtle.importKey(
+    "jwk",
+    state.session.e2e_private_jwk,
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    ["deriveBits"]
+  );
+  const ephemeralPublic = await importRecipientPublicKey(envelope.ephemeral_public_key);
+  const sharedBits = await window.crypto.subtle.deriveBits(
+    { name: "ECDH", public: ephemeralPublic },
+    privateKey,
+    256
+  );
+  const wrapKey = await deriveWrapKey(sharedBits, base64UrlToBytes(recipientEntry.salt_b64));
+  const contentKeyBytes = new Uint8Array(
+    await window.crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: base64UrlToBytes(recipientEntry.nonce_b64) },
+      wrapKey,
+      base64UrlToBytes(recipientEntry.wrapped_key_b64)
+    )
+  );
+  const contentKey = await window.crypto.subtle.importKey(
+    "raw",
+    contentKeyBytes,
+    { name: "AES-GCM" },
+    false,
+    ["decrypt"]
+  );
+  const plaintext = new Uint8Array(
+    await window.crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: base64UrlToBytes(envelope.payload_nonce_b64) },
+      contentKey,
+      base64UrlToBytes(envelope.payload_ciphertext_b64)
+    )
+  );
+  return JSON.parse(decoder().decode(plaintext));
 }
 
 function renderAttachments() {
   if (!state.composeAttachments.length) {
-    ui.attachmentList.innerHTML = '<div class="text-list">No uploaded attachments attached to the current draft.</div>';
+    ui.attachmentList.innerHTML = '<div class="text-list">No attachments added to this message yet.</div>';
     return;
   }
   ui.attachmentList.innerHTML = state.composeAttachments
-    .map(
-      (attachment) => `
+    .map((attachment) => {
+      const transformModes = Array.isArray(attachment?.analysis?.transform_modes)
+        ? attachment.analysis.transform_modes
+        : [];
+      const transformButtons =
+        isImageAttachment(attachment) && transformModes.length
+          ? transformModes
+              .filter((mode) => ["anime", "photo_boost", "thumbnail"].includes(mode))
+              .map((mode) => {
+                const label = {
+                  anime: "Stylized Copy",
+                  photo_boost: "Enhance Photo",
+                  thumbnail: "Small Preview",
+                }[mode] || mode;
+                return `
+                  <button type="button" class="ghost-button" data-transform-compose-attachment="${escapeHtml(attachment.id)}" data-mode="${escapeHtml(mode)}">
+                    ${escapeHtml(label)}
+                  </button>
+                `;
+              })
+              .join("")
+          : "";
+      return `
         <div class="attachment-chip-card">
           <div class="chip">
             <span>${escapeHtml(attachment.filename)}</span>
-            <code class="mono">${escapeHtml(attachment.id)}</code>
             <button type="button" data-remove-attachment="${escapeHtml(attachment.id)}" aria-label="Remove attachment">x</button>
           </div>
           <div class="text-list">${escapeHtml(composeAttachmentSummary(attachment))}</div>
-          <div class="inline-actions">
-            <button type="button" class="ghost-button" data-transform-compose-attachment="${escapeHtml(attachment.id)}" data-mode="anime">
-              Anime Copy
-            </button>
-            <button type="button" class="ghost-button" data-transform-compose-attachment="${escapeHtml(attachment.id)}" data-mode="photo_boost">
-              Photo Boost
-            </button>
-            <button type="button" class="ghost-button" data-transform-compose-attachment="${escapeHtml(attachment.id)}" data-mode="thumbnail">
-              Thumbnail
-            </button>
-          </div>
+          ${transformButtons ? `<div class="inline-actions">${transformButtons}</div>` : ""}
         </div>
       `
-    )
+    })
     .join("");
   ui.attachmentList.querySelectorAll("[data-remove-attachment]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -555,59 +915,82 @@ function renderAttachments() {
 
 function composeAttachmentSummary(attachment) {
   const analysis = attachment.analysis || {};
+  const contentType = attachment.content_type || "application/octet-stream";
+  if (!isImageAttachment(attachment)) {
+    return `${contentType} | file stored`;
+  }
   const dimensions = analysis.dimensions
     ? `${analysis.dimensions.width}x${analysis.dimensions.height}`
     : "dimensions unavailable";
-  const backend = analysis.backend || "heuristic";
-  const verdict = analysis.suspicious ? `flagged (${analysis.risk_score || 0})` : `ok (${analysis.risk_score || 0})`;
-  return `${dimensions} | ${backend} | ${verdict}`;
+  const verdict = analysis.suspicious ? "needs review" : "ready";
+  return `${dimensions} | ${verdict}`;
 }
 
 function renderAttachmentAnalysisCard(attachment, includeTransformActions = false) {
   const analysis = attachment.analysis || {};
+  const imageAttachment = isImageAttachment(attachment);
   const labels = Array.isArray(analysis.labels) ? analysis.labels : [];
   const reasons = Array.isArray(analysis.reasons) ? analysis.reasons : [];
   const dimensions = analysis.dimensions
     ? `${analysis.dimensions.width}x${analysis.dimensions.height}`
     : "unknown size";
   const summary = analysis.summary || `${attachment.content_type} attachment`;
-  const backend = analysis.backend || "heuristic";
-  const riskLabel = analysis.suspicious ? "Attachment review flagged this image." : "Attachment review did not flag this image.";
-  const transformActions = includeTransformActions
-    ? `
-      <button type="button" class="ghost-button" data-detail-action="transform-attachment" data-attachment-id="${escapeHtml(attachment.id)}" data-mode="anime">
-        Anime Copy
-      </button>
-      <button type="button" class="ghost-button" data-detail-action="transform-attachment" data-attachment-id="${escapeHtml(attachment.id)}" data-mode="photo_boost">
-        Photo Boost
-      </button>
-      <button type="button" class="ghost-button" data-detail-action="transform-attachment" data-attachment-id="${escapeHtml(attachment.id)}" data-mode="thumbnail">
-        Thumbnail
-      </button>
-    `
+  const riskLabel = imageAttachment
+    ? (analysis.suspicious
+        ? "Attachment review suggests checking this image before trusting it."
+        : "Attachment review did not find a strong warning sign.")
+    : "Non-image attachment. Image AI checks were skipped.";
+  const reasonText = reasons.length
+    ? reasons.map((reason) => humanizeSecurityReason(reason)).join(", ")
     : "";
+  const transformModes = Array.isArray(analysis.transform_modes) ? analysis.transform_modes : [];
+  const transformActions =
+    includeTransformActions && imageAttachment
+      ? transformModes
+          .filter((mode) => ["anime", "photo_boost", "thumbnail"].includes(mode))
+          .map((mode) => {
+            const label = {
+              anime: "Stylized Copy",
+              photo_boost: "Enhance Photo",
+              thumbnail: "Small Preview",
+            }[mode] || mode;
+            return `
+              <button type="button" class="ghost-button" data-detail-action="transform-attachment" data-attachment-id="${escapeHtml(attachment.id)}" data-mode="${escapeHtml(mode)}">
+                ${escapeHtml(label)}
+              </button>
+            `;
+          })
+          .join("")
+      : "";
+  const previewAction =
+    imageAttachment && analysis.preview_ready !== false
+      ? `
+        <button type="button" class="ghost-button" data-detail-action="preview-attachment" data-attachment-id="${escapeHtml(attachment.id)}" data-filename="${escapeHtml(attachment.filename)}">
+          Open Preview
+        </button>
+      `
+      : "";
   return `
     <div class="attachment-card">
       <strong>${escapeHtml(attachment.filename)}</strong>
       <div class="text-list">${escapeHtml(summary)}</div>
-      <div class="text-list">${escapeHtml(dimensions)} | backend=${escapeHtml(backend)} | risk=${escapeHtml(String(analysis.risk_score || 0))}</div>
+      <div class="text-list">${escapeHtml(imageAttachment ? dimensions : attachment.content_type || "application/octet-stream")}</div>
       <div class="text-list">${escapeHtml(riskLabel)}</div>
       <div class="mail-tags">
-        ${(labels.length ? labels : ["image"]).map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
+        ${(labels.length ? labels : [imageAttachment ? "image" : "file"]).map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
       </div>
       ${
-        reasons.length
-          ? `<div class="text-list">Reasons: ${escapeHtml(reasons.join(", "))}</div>`
+        reasonText
+          ? `<div class="text-list">Review notes: ${escapeHtml(reasonText)}</div>`
           : ""
       }
-      <div class="detail-actions">
-        <button type="button" class="ghost-button" data-detail-action="preview-attachment" data-attachment-id="${escapeHtml(attachment.id)}" data-filename="${escapeHtml(attachment.filename)}">
-          Preview
-        </button>
-        ${transformActions}
-      </div>
+      ${(previewAction || transformActions) ? `<div class="detail-actions">${previewAction}${transformActions}</div>` : ""}
     </div>
   `;
+}
+
+function isImageAttachment(attachment) {
+  return String(attachment?.content_type || "").toLowerCase().startsWith("image/");
 }
 
 function renderSearchContacts() {
@@ -616,10 +999,10 @@ function renderSearchContacts() {
     return;
   }
   ui.searchContacts.innerHTML = `
-    <strong>Contacts</strong>
+    <strong>Matching Contacts</strong>
     <ul>
       ${state.searchContacts
-        .map((contact) => `<li>${escapeHtml(contact.email)} <span class="mono">score=${contact.score.toFixed(2)}</span></li>`)
+        .map((contact) => `<li>${escapeHtml(contact.email)}</li>`)
         .join("")}
     </ul>
   `;
@@ -635,8 +1018,8 @@ function renderMailboxList() {
   if (!state.session) {
     ui.mailboxList.innerHTML = `
       <div class="empty-state">
-        <strong>Sign in to load mail</strong>
-        <p>The browser UI is live, but mailbox data stays locked until you log in.</p>
+        <strong>Sign in to open your mailbox</strong>
+        <p>Your messages stay protected until you sign in.</p>
       </div>
     `;
     return;
@@ -648,38 +1031,39 @@ function renderMailboxList() {
             (todo) => `
               <article class="mail-card">
                 <strong>${escapeHtml(todo.title)}</strong>
-                <div class="mail-meta mono">${escapeHtml(todo.id)}</div>
-                <div class="mail-snippet">Message: ${escapeHtml(todo.message_id)}</div>
+                <div class="mail-snippet">Added ${escapeHtml(formatTime(todo.created_at))}</div>
               </article>
             `
           )
           .join("")
       : `
         <div class="empty-state">
-          <strong>No todos yet</strong>
-          <p>Quick actions can create TODO items from selected messages.</p>
+          <strong>No follow-ups yet</strong>
+          <p>Helpful message actions can add reminders here.</p>
         </div>
       `;
     return;
   }
   const messages = currentMailboxMessages();
   if (!messages.length) {
+    const mailboxName = {
+      inbox: "inbox",
+      sent: "sent mail",
+      drafts: "drafts",
+      search: "search results",
+      todos: "follow-ups",
+    }[state.activeMailbox] || state.activeMailbox;
     ui.mailboxList.innerHTML = `
       <div class="empty-state">
-        <strong>No messages in ${escapeHtml(state.activeMailbox)}</strong>
-        <p>Try refreshing or sending a cross-domain message from another window.</p>
+        <strong>No messages in ${escapeHtml(mailboxName)}</strong>
+        <p>Try refreshing the mailbox or sending a message from another account.</p>
       </div>
     `;
     return;
   }
   ui.mailboxList.innerHTML = messages
     .map((message) => {
-      const tags = [
-        message.delivery_state,
-        message.classification,
-        message.recalled ? "recalled" : null,
-        message.security_flags?.suspicious ? "suspicious" : null,
-      ].filter(Boolean);
+      const tags = friendlyMessageTags(message);
       return `
         <article class="mail-card ${message.message_id === state.selectedMessageId ? "active" : ""}" data-message-id="${escapeHtml(message.message_id)}">
           <strong>${escapeHtml(message.subject || "(no subject)")}</strong>
@@ -698,17 +1082,34 @@ function renderDetail() {
     ui.detailView.innerHTML = `
       <div class="empty-state">
         <strong>No message selected</strong>
-        <p>Pick a message from the mailbox list to inspect it here.</p>
+        <p>Select a message from the list to read it here.</p>
       </div>
     `;
     return;
   }
   const suspicious = Boolean(message.security_flags?.suspicious);
+  const statusLabel = describeMessageStatus(message);
+  const securityState = describeSecurityState(message);
+  const e2eBox =
+    message.e2e_encrypted
+      ? `
+        <div class="security-box safe">
+          <strong>End-to-end encrypted message</strong>
+          <div class="mail-snippet">
+            ${
+              message.security_flags?.e2e_decrypted_local
+                ? "Decrypted locally in this browser. The server only handled protected ciphertext."
+                : "Protected content was delivered. Your local private key is required to open the message text."
+            }
+          </div>
+        </div>
+      `
+      : "";
   const previewMarkup =
     state.preview && state.preview.messageId === message.message_id
       ? `
         <div class="attachment-preview">
-          <span>Preview</span>
+          <span>Image Preview</span>
           <img src="${state.preview.url}" alt="${escapeHtml(state.preview.filename)}">
         </div>
       `
@@ -720,22 +1121,17 @@ function renderDetail() {
         <div class="mail-meta">${escapeHtml(message.from_email)} -> ${escapeHtml(message.to.join(", "))}</div>
       </div>
       <div class="meta-grid">
-        <div><span>Message ID</span><strong class="mono">${escapeHtml(message.message_id)}</strong></div>
-        <div><span>Thread ID</span><strong class="mono">${escapeHtml(message.thread_id)}</strong></div>
-        <div><span>Folder</span><strong>${escapeHtml(message.folder)}</strong></div>
-        <div><span>Delivery</span><strong>${escapeHtml(message.delivery_state || "delivered")}</strong></div>
+        <div><span>Status</span><strong>${escapeHtml(statusLabel)}</strong></div>
         <div><span>Created</span><strong>${escapeHtml(formatTime(message.created_at))}</strong></div>
       </div>
       <div class="security-box ${suspicious ? "" : "safe"}">
-        <strong>${suspicious ? "Suspicious message flagged" : "No high-risk phishing flag triggered"}</strong>
-        <div class="mail-snippet">
-          Score: ${escapeHtml(String(message.security_flags?.phishing_score ?? 0))}
-          ${message.security_flags?.reasons?.length ? ` | Reasons: ${escapeHtml(message.security_flags.reasons.join(", "))}` : ""}
-        </div>
+        <strong>${escapeHtml(securityState.title)}</strong>
+        <div class="mail-snippet">${escapeHtml(securityState.body)}</div>
       </div>
+      ${e2eBox}
       <div class="detail-body">${escapeHtml(message.body_text)}</div>
       <div class="detail-block">
-        <span>Keywords</span>
+        <span>Highlights</span>
         <div class="mail-tags">${message.keywords.map((keyword) => `<span>${escapeHtml(keyword)}</span>`).join("") || "<span>None</span>"}</div>
       </div>
       <div class="detail-block">
@@ -748,17 +1144,17 @@ function renderDetail() {
                     (attachment) => renderAttachmentAnalysisCard(attachment, true)
                   )
                   .join("")
-              : '<div class="text-list">No attachments.</div>'
+              : '<div class="text-list">No attachments on this message.</div>'
           }
         </div>
         ${previewMarkup}
       </div>
       <div class="detail-block">
-        <span>Message Actions</span>
+        <span>Message Tools</span>
         <div class="detail-actions">
-          ${message.folder === "inbox" && !message.is_read ? `<button type="button" data-detail-action="mark-read">Mark Read</button>` : ""}
-          ${message.folder === "sent" && !message.recalled ? `<button type="button" class="secondary-button" data-detail-action="recall">Recall</button>` : ""}
-          ${message.folder === "draft" ? `<button type="button" class="ghost-button" data-detail-action="load-draft">Load Draft Into Composer</button>` : ""}
+          ${message.folder === "inbox" && !message.is_read ? `<button type="button" data-detail-action="mark-read">Mark As Read</button>` : ""}
+          ${message.folder === "sent" && !message.recalled ? `<button type="button" class="secondary-button" data-detail-action="recall">Recall Message</button>` : ""}
+          ${message.folder === "draft" ? `<button type="button" class="ghost-button" data-detail-action="load-draft">Open Draft</button>` : ""}
           ${
             !message.folder || (message.folder !== "draft" && message.folder !== "sent" && message.folder !== "inbox")
               ? ""
@@ -767,7 +1163,7 @@ function renderDetail() {
         </div>
       </div>
       <div class="detail-block">
-        <span>Quick Replies</span>
+        <span>Suggested Replies</span>
         <div class="detail-replies">
           ${
             message.quick_replies.length
@@ -780,12 +1176,12 @@ function renderDetail() {
                     `
                   )
                   .join("")
-              : '<div class="text-list">No quick replies for this message.</div>'
+              : '<div class="text-list">No suggested replies for this message.</div>'
           }
         </div>
       </div>
       <div class="detail-block">
-        <span>Quick Actions</span>
+        <span>Helpful Actions</span>
         <div class="detail-actions">
           ${
             message.actions.length
@@ -798,7 +1194,7 @@ function renderDetail() {
                     `
                   )
                   .join("")
-              : '<div class="text-list">No quick actions available.</div>'
+              : '<div class="text-list">No suggested actions for this message.</div>'
           }
         </div>
       </div>
@@ -837,7 +1233,7 @@ async function transformAttachmentToComposer(attachmentId, mode) {
   }
   state.composeAttachments.push(transformed);
   renderAttachments();
-  showToast(`Created ${mode} copy ${transformed.filename} and added it to the composer.`);
+  showToast(`${transformed.filename} was added to the message.`);
 }
 
 function revokePreview() {
@@ -868,7 +1264,7 @@ function requireSession() {
   if (state.session) {
     return true;
   }
-  showToast("Log in first to use authenticated mail features.", true);
+  showToast("Please sign in first.", true);
   return false;
 }
 
@@ -919,6 +1315,98 @@ async function signedPost(path, body) {
   return result;
 }
 
+function friendlyMessageTags(message) {
+  const tags = [];
+  if (message.recalled) {
+    tags.push("Recalled");
+  } else if (message.delivery_state) {
+    tags.push(describeMessageStatus(message));
+  }
+  if (message.classification && message.classification !== "General" && message.classification !== "Encrypted") {
+    tags.push(message.classification);
+  }
+  if (message.e2e_encrypted) {
+    tags.push("Private");
+  }
+  if (message.security_flags?.suspicious) {
+    tags.push("Review");
+  }
+  return tags;
+}
+
+function describeMessageStatus(message) {
+  if (message.recalled || message.recall_status === "recalled") {
+    return "Recalled";
+  }
+  const state = String(message.delivery_state || "").toLowerCase();
+  if (state === "queued") {
+    return "Sending";
+  }
+  if (state === "partial") {
+    return "Partially delivered";
+  }
+  if (state === "failed") {
+    return "Needs attention";
+  }
+  if (state === "recalled") {
+    return "Recalled";
+  }
+  if (state === "draft") {
+    return "Draft";
+  }
+  return "Delivered";
+}
+
+function describeSecurityState(message) {
+  if (message.security_flags?.suspicious) {
+    const reasons = Array.isArray(message.security_flags?.reasons)
+      ? message.security_flags.reasons.map((reason) => humanizeSecurityReason(reason))
+      : [];
+    return {
+      title: "This message may be risky",
+      body: reasons.length
+        ? `Warning signs detected: ${reasons.join(", ")}.`
+        : "The message looks unusual, so treat links and requests carefully.",
+    };
+  }
+  if (message.e2e_encrypted) {
+    return {
+      title: "Private message protection is active",
+      body: "This message was delivered as end-to-end encrypted content and decrypted locally in your browser when possible.",
+    };
+  }
+  return {
+    title: "No strong warning sign was detected",
+    body: "Basic phishing and content checks did not flag this message.",
+  };
+}
+
+function humanizeSecurityReason(reason) {
+  const labels = {
+    credentials_visible: "visible password or credentials",
+    credential_prompt_ui: "login prompt styling",
+    invoice_like_content: "invoice-like content",
+    payment_language_in_image: "payment wording",
+    banking_language_in_image: "banking wording",
+    verification_language_in_image: "verification request",
+    qr_code_present: "QR code",
+    suspicious_filename_tokens: "suspicious filename",
+    tracking_pixel_like: "tracking-pixel pattern",
+    very_small_image: "very small image",
+    extreme_aspect_ratio: "extreme image shape",
+    low_visual_diversity: "very low visual variation",
+    too_many_links: "too many links",
+    urgent_language: "urgent language",
+    password_request: "password request",
+    payment_request: "payment request",
+    remote_domain_mismatch: "sender/domain mismatch",
+    suspicious_tld: "unusual top-level domain",
+    hf_label_phishing: "model-based phishing signal",
+    local_llm_reviewed: "reviewed by local smart module",
+  };
+  return labels[reason] || reason.replace(/_/g, " ");
+}
+
 async function buildSignedHeaders(path, body) {
   if (!window.crypto?.subtle) {
     throw new Error("This browser does not provide Web Crypto for secure request signing.");
@@ -963,6 +1451,65 @@ async function hmacHex(secret, message) {
   return Array.from(new Uint8Array(signature))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+function encoder() {
+  return new TextEncoder();
+}
+
+function decoder() {
+  return new TextDecoder();
+}
+
+function randomBytes(length) {
+  const bytes = new Uint8Array(length);
+  window.crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+function bytesToBase64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64UrlToBytes(value) {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = base64 + "=".repeat((4 - (base64.length % 4 || 4)) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+async function importRecipientPublicKey(publicKeyB64) {
+  return window.crypto.subtle.importKey(
+    "raw",
+    base64UrlToBytes(publicKeyB64),
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    []
+  );
+}
+
+async function deriveWrapKey(sharedBits, saltBytes) {
+  const hkdfKey = await window.crypto.subtle.importKey("raw", sharedBits, "HKDF", false, ["deriveKey"]);
+  return window.crypto.subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: saltBytes,
+      info: encoder().encode("secure-email-e2e-wrap-v1"),
+    },
+    hkdfKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
 }
 
 function canonicalJson(value) {

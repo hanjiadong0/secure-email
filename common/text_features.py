@@ -2,139 +2,52 @@ from __future__ import annotations
 
 import math
 import re
+import threading
 from collections import Counter
 
+import spacy  # type: ignore
 
-TOKEN_RE = re.compile(r"[a-z0-9@._/-]{2,}", re.IGNORECASE)
-STOPWORDS = {
-    "a",
-    "about",
-    "after",
-    "again",
-    "against",
-    "all",
-    "also",
-    "am",
-    "among",
-    "an",
-    "and",
-    "any",
-    "are",
-    "around",
-    "at",
-    "be",
-    "because",
-    "been",
-    "before",
-    "being",
-    "below",
-    "between",
-    "both",
-    "but",
-    "by",
-    "can",
-    "could",
-    "did",
-    "do",
-    "does",
-    "doing",
-    "down",
-    "during",
-    "each",
-    "few",
-    "for",
-    "from",
-    "further",
-    "had",
-    "has",
-    "have",
-    "having",
-    "he",
-    "her",
-    "here",
-    "hers",
-    "herself",
-    "him",
-    "himself",
-    "his",
-    "how",
-    "i",
-    "if",
-    "in",
-    "into",
-    "as",
-    "is",
-    "it",
-    "its",
-    "itself",
-    "just",
-    "me",
-    "more",
-    "most",
-    "my",
-    "myself",
-    "no",
-    "of",
-    "on",
-    "once",
-    "only",
-    "other",
-    "our",
-    "ours",
-    "ourselves",
-    "out",
-    "over",
-    "own",
-    "or",
-    "please",
-    "same",
-    "she",
-    "should",
-    "so",
-    "some",
-    "such",
-    "that",
-    "the",
-    "their",
-    "theirs",
-    "them",
-    "themselves",
-    "then",
-    "there",
-    "these",
-    "this",
-    "those",
-    "through",
-    "too",
-    "to",
-    "under",
-    "until",
-    "up",
-    "very",
-    "was",
-    "were",
-    "what",
-    "when",
-    "where",
-    "which",
-    "while",
-    "who",
-    "whom",
-    "why",
-    "will",
-    "would",
-    "we",
-    "with",
-    "your",
-    "yours",
-    "yourself",
-    "yourselves",
-}
+
+_SPACY_MAX_CHARS = 50_000
+_SPACY_NLP = None
+_SPACY_LOCK = threading.Lock()
+
+
+def _get_spacy_nlp():
+    global _SPACY_NLP
+    if _SPACY_NLP is not None:
+        return _SPACY_NLP
+    with _SPACY_LOCK:
+        if _SPACY_NLP is not None:
+            return _SPACY_NLP
+        # Use a lightweight tokenizer-only pipeline that doesn't require downloading a model.
+        nlp = spacy.blank("en")
+        nlp.max_length = max(nlp.max_length, _SPACY_MAX_CHARS + 256)
+        _SPACY_NLP = nlp
+        return _SPACY_NLP
 
 
 def tokenize(text: str) -> list[str]:
-    tokens = [match.group(0).lower() for match in TOKEN_RE.finditer(text)]
-    return [token for token in tokens if token not in STOPWORDS and not token.isdigit()]
+    if not text:
+        return []
+    doc = _get_spacy_nlp()(text[:_SPACY_MAX_CHARS])
+    tokens: list[str] = []
+    for token in doc:
+        if token.is_space or token.is_punct:
+            continue
+        if token.is_stop or token.like_num or token.is_digit:
+            continue
+        if token.like_url:
+            continue
+        value = (token.lemma_ or token.text).strip().lower()
+        if value in {"http", "https"}:
+            continue
+        if len(value) < 2:
+            continue
+        if not any(char.isalnum() for char in value):
+            continue
+        tokens.append(value)
+    return tokens
 
 
 def extract_keywords(text: str, corpus: list[str], top_k: int = 5) -> list[str]:
@@ -168,7 +81,12 @@ def classify_message(keywords: list[str], subject: str, body_text: str) -> str:
     return "General"
 
 
-def phishing_flags(sender_email: str, subject: str, body_text: str, reply_to: str | None = None) -> dict:
+def _heuristic_phishing_flags(
+    sender_email: str,
+    subject: str,
+    body_text: str,
+    reply_to: str | None = None,
+) -> dict:
     text = f"{subject} {body_text}".lower()
     score = 0
     reasons: list[str] = []
@@ -205,7 +123,43 @@ def phishing_flags(sender_email: str, subject: str, body_text: str, reply_to: st
     return {"phishing_score": score, "suspicious": suspicious, "reasons": reasons}
 
 
-def quick_reply_suggestions(subject: str, body_text: str) -> list[str]:
+def phishing_flags(
+    sender_email: str,
+    subject: str,
+    body_text: str,
+    reply_to: str | None = None,
+    model_score: int | None = None,
+    model_suspicious: bool | None = None,
+    model_reasons: list[str] | None = None,
+) -> dict:
+    heuristic = _heuristic_phishing_flags(sender_email, subject, body_text, reply_to)
+    if model_score is None and model_suspicious is None and not model_reasons:
+        return heuristic
+
+    merged_reasons = list(
+        dict.fromkeys(
+            [
+                *heuristic.get("reasons", []),
+                *(model_reasons or []),
+            ]
+        )
+    )
+    heuristic_score = int(heuristic.get("phishing_score", 0))
+    try:
+        raw_model_score = int(model_score or 0)
+    except (TypeError, ValueError):
+        raw_model_score = 0
+    bounded_model_score = max(0, min(10, raw_model_score))
+    suspicious = bool(heuristic.get("suspicious")) or bool(model_suspicious) or bounded_model_score >= 6
+    score = max(heuristic_score, bounded_model_score)
+    return {
+        "phishing_score": score,
+        "suspicious": suspicious,
+        "reasons": merged_reasons,
+    }
+
+
+def _heuristic_quick_reply_suggestions(subject: str, body_text: str) -> list[str]:
     text = f"{subject} {body_text}".lower()
     suggestions: list[str] = []
     if "?" in body_text or "can you" in text or "could you" in text:
@@ -221,6 +175,31 @@ def quick_reply_suggestions(subject: str, body_text: str) -> list[str]:
         if item not in unique:
             unique.append(item)
     return unique[:4]
+
+
+def quick_reply_suggestions(
+    subject: str,
+    body_text: str,
+    model_suggestions: list[str] | None = None,
+) -> list[str]:
+    if model_suggestions:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in model_suggestions:
+            if not isinstance(item, str):
+                continue
+            value = item.strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            cleaned.append(value[:180])
+        if cleaned:
+            return cleaned[:4]
+    return _heuristic_quick_reply_suggestions(subject, body_text)
+
+
+def apply_model_quick_replies(subject: str, body_text: str, model_suggestions: list[str] | None) -> list[str]:
+    return quick_reply_suggestions(subject, body_text, model_suggestions)
 
 
 def levenshtein(left: str, right: str) -> int:

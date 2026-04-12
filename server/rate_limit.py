@@ -66,7 +66,7 @@ def enforce_budget(ctx: AppContext, bucket: str, limit: int, window_seconds: int
 
 
 def check_login_lockout(ctx: AppContext, email: str, ip_address: str) -> None:
-    buckets = [f"login:user:{email}", f"login:user-ip:{email}:{ip_address}"]
+    buckets = [f"login:user:{email}", f"login:user-ip:{email}:{ip_address}", f"login:ip:{ip_address}"]
     with ctx.connect() as conn:
         row = conn.execute(
             f"SELECT MAX(until_at) AS until_at FROM lockouts WHERE bucket IN ({','.join('?' for _ in buckets)})",
@@ -100,6 +100,17 @@ def record_login_failure(ctx: AppContext, email: str, ip_address: str) -> int | 
                     (bucket, lockout_until),
                 )
             return ctx.config.lockout_seconds
+    ip_bucket = f"login:ip:{ip_address}"
+    _record_event(ctx, ip_bucket, 1)
+    ip_total, _ = _window_stats(ctx, ip_bucket, ctx.config.login_window_seconds)
+    if ip_total >= ctx.config.login_ip_max_attempts:
+        with ctx.connect() as conn:
+            conn.execute(
+                "INSERT INTO lockouts(bucket, until_at) VALUES (?, ?) "
+                "ON CONFLICT(bucket) DO UPDATE SET until_at = excluded.until_at",
+                (ip_bucket, lockout_until),
+            )
+        return ctx.config.lockout_seconds
     return None
 
 

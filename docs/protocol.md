@@ -48,6 +48,18 @@ Response:
 The registration payload may also include `confirm_password`, and the server
 rejects mismatches.
 
+## E2E Key Directory
+
+Authenticated clients can publish and resolve ECC public keys:
+
+- `POST /v1/keys/publish`
+- `GET /v1/keys/me`
+- `POST /v1/keys/resolve`
+
+Peer domains resolve remote user keys through:
+
+- `POST /v1/relay/public_keys`
+
 ## Authenticated Request Protection
 
 Authenticated state-changing requests include:
@@ -62,15 +74,48 @@ Authenticated state-changing requests include:
 
 `X-Body-Mac` is an HMAC over a canonical JSON structure containing method, path, request metadata, and request body.
 
-This protects against:
+These headers help the server verify that the request is:
 
-- tampering
-- replay
-- duplicate submission
-- stale session action reuse
+- sent by an authenticated user
+- tied to the correct session
+- fresh and not replayed
+- processed in the right order
+- not tampered with in transit
+- traceable in logs
 
-The per-session `session_key` used for request MACs is encrypted at rest inside
-the local SQLite database rather than stored in plaintext.
+### Headers
+
+- `Authorization: Bearer <session_token>`  
+  Authenticates the user session.
+
+- `X-Request-Id`  
+  Unique ID for this request, used for tracing and duplicate detection.
+
+- `X-Session-Id`  
+  Identifies the active session that issued the request.
+
+- `X-Seq-No`  
+  Sequence number for ordering requests and detecting out-of-order or replayed actions.
+
+- `X-Timestamp`  
+  Request creation time, used to reject stale requests.
+
+- `X-Nonce`  
+  One-time random value that helps prevent replay attacks.
+
+- `X-Body-Mac`  
+  Message authentication code over the request body, used to detect tampering.
+
+### Security Value
+
+Together, these fields protect against:
+
+- unauthorized state changes
+- replay attacks
+- duplicate submissions
+- request tampering
+- session confusion
+- weak auditability
 
 ## Mail Endpoints
 
@@ -171,6 +216,10 @@ Supported transform modes:
 - `photo_boost`
 - `thumbnail`
 
+The default picture-analysis model in the demo configuration is:
+
+- `hf_vision_model: microsoft/Florence-2-base`
+
 ## Relay Protocol
 
 Relay requests are sent to:
@@ -210,9 +259,31 @@ The smart pipeline asks the local model for:
 - quick replies
 - phishing hints
 - optional image labels for attachment analysis
+- optional Florence-2 image captions for attachment review
 
 If the local model is unavailable or returns invalid output, the server falls
 back to the built-in heuristic engine.
+
+## Optional ECC End-to-End Mail
+
+When a client sends an end-to-end encrypted text mail, the request still goes to
+`POST /v1/mail/send`, but it includes an `e2e_envelope` object.
+
+The current E2E envelope format uses:
+
+- curve: `P-256`
+- key agreement: ECDH
+- key derivation: HKDF-SHA256
+- content encryption: AES-256-GCM
+
+The server stores and relays:
+
+- ciphertext envelope
+- wrapped content keys per recipient
+- placeholder subject/body text
+
+The browser and CLI decrypt the envelope locally with the recipient private key.
+Current limitation: E2E mode is text-only and does not yet support attachments.
 
 ## Mailbox States
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ class DomainConfig:
     session_ttl_minutes: int = 30
     recall_window_minutes: int = 5
     login_max_attempts: int = 5
+    login_ip_max_attempts: int = 12
     login_window_seconds: int = 300
     lockout_seconds: int = 300
     send_rate_limit_per_minute: int = 30
@@ -34,6 +36,10 @@ class DomainConfig:
     ollama_model: str | None = None
     ollama_vision_model: str | None = None
     ollama_timeout_seconds: float = 6.0
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str | None = None
+    openai_api_key: str | None = None
+    openai_timeout_seconds: float = 8.0
     hf_text_model: str | None = None
     hf_vision_model: str | None = None
     hf_device: str = "cpu"
@@ -57,6 +63,7 @@ class DomainConfig:
             "session_ttl_minutes",
             "recall_window_minutes",
             "login_max_attempts",
+            "login_ip_max_attempts",
             "login_window_seconds",
             "lockout_seconds",
             "send_rate_limit_per_minute",
@@ -72,6 +79,10 @@ class DomainConfig:
             "ollama_model",
             "ollama_vision_model",
             "ollama_timeout_seconds",
+            "openai_base_url",
+            "openai_model",
+            "openai_api_key",
+            "openai_timeout_seconds",
             "hf_text_model",
             "hf_vision_model",
             "hf_device",
@@ -88,6 +99,7 @@ class DomainConfig:
             session_ttl_minutes=int(raw.get("session_ttl_minutes", 30)),
             recall_window_minutes=int(raw.get("recall_window_minutes", 5)),
             login_max_attempts=int(raw.get("login_max_attempts", 5)),
+            login_ip_max_attempts=int(raw.get("login_ip_max_attempts", 12)),
             login_window_seconds=int(raw.get("login_window_seconds", 300)),
             lockout_seconds=int(raw.get("lockout_seconds", 300)),
             send_rate_limit_per_minute=int(raw.get("send_rate_limit_per_minute", 30)),
@@ -105,6 +117,10 @@ class DomainConfig:
             ollama_model=raw.get("ollama_model"),
             ollama_vision_model=raw.get("ollama_vision_model"),
             ollama_timeout_seconds=float(raw.get("ollama_timeout_seconds", 6.0)),
+            openai_base_url=str(raw.get("openai_base_url", "https://api.openai.com/v1")),
+            openai_model=raw.get("openai_model"),
+            openai_api_key=raw.get("openai_api_key") or os.getenv("OPENAI_API_KEY"),
+            openai_timeout_seconds=float(raw.get("openai_timeout_seconds", 8.0)),
             hf_text_model=raw.get("hf_text_model"),
             hf_vision_model=raw.get("hf_vision_model"),
             hf_device=str(raw.get("hf_device", "cpu")),

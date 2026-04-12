@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -15,7 +16,7 @@ import httpx
 from common.config import DomainConfig
 from common.data_security import DataProtector
 from common.crypto import mac_hex
-from common.utils import isoformat_utc, json_dumps, new_id, utcnow
+from common.utils import isoformat_utc, json_dumps, new_id, normalize_email, utcnow
 
 
 RelayDispatch = Callable[[str, str, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -27,9 +28,18 @@ PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL,
+    email_hash TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_public_keys (
+    email TEXT PRIMARY KEY,
+    algorithm TEXT NOT NULL,
+    curve TEXT NOT NULL,
+    public_key TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -49,6 +59,7 @@ CREATE TABLE IF NOT EXISTS rate_events (
     amount INTEGER NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_rate_events_bucket_created_at ON rate_events(bucket, created_at);
 
 CREATE TABLE IF NOT EXISTS lockouts (
     bucket TEXT PRIMARY KEY,
@@ -64,6 +75,7 @@ CREATE TABLE IF NOT EXISTS request_guards (
     PRIMARY KEY(session_token, request_id),
     UNIQUE(session_token, nonce)
 );
+CREATE INDEX IF NOT EXISTS idx_request_guards_created_at ON request_guards(created_at);
 
 CREATE TABLE IF NOT EXISTS relay_guards (
     source_domain TEXT NOT NULL,
@@ -71,6 +83,7 @@ CREATE TABLE IF NOT EXISTS relay_guards (
     created_at TEXT NOT NULL,
     PRIMARY KEY(source_domain, nonce)
 );
+CREATE INDEX IF NOT EXISTS idx_relay_guards_created_at ON relay_guards(created_at);
 
 CREATE TABLE IF NOT EXISTS attachment_blobs (
     blob_key TEXT PRIMARY KEY,
@@ -111,6 +124,7 @@ CREATE TABLE IF NOT EXISTS mail_items (
     quick_replies_json TEXT NOT NULL,
     keywords_json TEXT NOT NULL,
     classification TEXT NOT NULL,
+    e2e_envelope_json TEXT NOT NULL DEFAULT '',
     recalled INTEGER NOT NULL DEFAULT 0,
     recall_status TEXT,
     is_read INTEGER NOT NULL DEFAULT 0
@@ -119,6 +133,7 @@ CREATE TABLE IF NOT EXISTS mail_items (
 CREATE INDEX IF NOT EXISTS idx_mail_items_owner_folder ON mail_items(owner_email, folder, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_mail_items_owner_message ON mail_items(owner_email, message_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_items_owner_folder_message ON mail_items(owner_email, folder, message_id);
+CREATE INDEX IF NOT EXISTS idx_mail_items_owner_created_at ON mail_items(owner_email, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS mail_attachment_links (
     mailbox_item_id TEXT NOT NULL,
@@ -142,6 +157,7 @@ CREATE TABLE IF NOT EXISTS todos (
     title TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_todos_owner_created_at ON todos(owner_email, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS contacts (
     owner_email TEXT NOT NULL,
@@ -150,6 +166,7 @@ CREATE TABLE IF NOT EXISTS contacts (
     source TEXT NOT NULL,
     PRIMARY KEY(owner_email, contact_email)
 );
+CREATE INDEX IF NOT EXISTS idx_contacts_owner_last_seen ON contacts(owner_email, last_seen_at DESC);
 
 CREATE TABLE IF NOT EXISTS job_queue (
     job_id TEXT PRIMARY KEY,
@@ -168,6 +185,12 @@ CREATE TABLE IF NOT EXISTS job_queue (
 
 CREATE INDEX IF NOT EXISTS idx_job_queue_status_type_available
     ON job_queue(status, job_type, available_at, created_at);
+
+CREATE TABLE IF NOT EXISTS secure_settings (
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -179,6 +202,8 @@ class AppContext:
     log_path: Path = field(init=False)
     alert_path: Path = field(init=False)
     data_protector: DataProtector = field(init=False, repr=False)
+    index_secret: str = field(init=False, repr=False)
+    secret_cache: dict[str, str] = field(init=False, repr=False)
     stop_event: threading.Event = field(init=False, repr=False)
     worker_threads: list[threading.Thread] = field(init=False, repr=False)
     workers_started: bool = field(init=False, default=False)
@@ -192,6 +217,8 @@ class AppContext:
             f"{self.config.domain}:{self.config.action_secret}:{self.config.relay_secret}"
         )
         self.data_protector = DataProtector(data_secret)
+        self.index_secret = f"{data_secret}:index:v1"
+        self.secret_cache = {}
         self.stop_event = threading.Event()
         self.worker_threads = []
         self._init_db()
@@ -199,6 +226,9 @@ class AppContext:
     def _init_db(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+            if "email_hash" not in user_columns:
+                conn.execute("ALTER TABLE users ADD COLUMN email_hash TEXT DEFAULT ''")
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
             if "session_key" not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN session_key TEXT DEFAULT ''")
@@ -210,10 +240,78 @@ class AppContext:
             mail_columns = {row["name"] for row in conn.execute("PRAGMA table_info(mail_items)").fetchall()}
             if "delivery_state" not in mail_columns:
                 conn.execute("ALTER TABLE mail_items ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'delivered'")
+            if "e2e_envelope_json" not in mail_columns:
+                conn.execute("ALTER TABLE mail_items ADD COLUMN e2e_envelope_json TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 "UPDATE job_queue SET status = 'pending', updated_at = ? WHERE status = 'in_progress'",
                 (isoformat_utc(),),
             )
+            self._migrate_sensitive_auth_fields(conn)
+            self._bootstrap_model_secrets(conn)
+
+    def _migrate_sensitive_auth_fields(self, conn: sqlite3.Connection) -> None:
+        user_rows = conn.execute("SELECT id, email, password_hash FROM users").fetchall()
+        for row in user_rows:
+            decrypted_email = normalize_email(self.decrypt_text(row["email"]))
+            if not decrypted_email:
+                continue
+            email_hash = self.stable_hash(decrypted_email)
+            encrypted_email = self.encrypt_text(decrypted_email)
+            encrypted_password_hash = self.encrypt_text(self.decrypt_text(row["password_hash"]))
+            conn.execute(
+                "UPDATE users SET email = ?, email_hash = ?, password_hash = ? WHERE id = ?",
+                (encrypted_email, email_hash, encrypted_password_hash, row["id"]),
+            )
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_hash ON users(email_hash)")
+
+        session_rows = conn.execute("SELECT token, session_key FROM sessions").fetchall()
+        for row in session_rows:
+            raw_token = self.decrypt_text(row["token"])
+            if not re.fullmatch(r"[0-9a-f]{64}", raw_token):
+                token_hash = self.stable_hash(raw_token)
+            else:
+                token_hash = raw_token
+            encrypted_session_key = self.encrypt_text(self.decrypt_text(row["session_key"]))
+            conn.execute(
+                "UPDATE sessions SET token = ?, session_key = ? WHERE token = ?",
+                (token_hash, encrypted_session_key, row["token"]),
+            )
+
+        # Replay guards are short-lived. Clearing them avoids stale keys after token-hash migration.
+        conn.execute("DELETE FROM request_guards")
+
+    def _bootstrap_model_secrets(self, conn: sqlite3.Connection) -> None:
+        raw_openai_key = self.decrypt_text(self.config.openai_api_key) if self.config.openai_api_key else ""
+        if raw_openai_key:
+            conn.execute(
+                "INSERT INTO secure_settings(name, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                ("openai_api_key", self.encrypt_text(raw_openai_key), isoformat_utc()),
+            )
+            self.secret_cache["openai_api_key"] = raw_openai_key
+            # Keep API keys out of plain config values after secure bootstrap.
+            self.config.openai_api_key = None
+            return
+        row = conn.execute(
+            "SELECT value FROM secure_settings WHERE name = ?",
+            ("openai_api_key",),
+        ).fetchone()
+        if row is not None:
+            self.secret_cache["openai_api_key"] = self.decrypt_text(row["value"])
+
+    def get_secret(self, name: str) -> str | None:
+        cached = self.secret_cache.get(name)
+        if cached:
+            return cached
+        with self.connect() as conn:
+            row = conn.execute("SELECT value FROM secure_settings WHERE name = ?", (name,)).fetchone()
+        if row is None:
+            return None
+        value = self.decrypt_text(row["value"])
+        if value:
+            self.secret_cache[name] = value
+            return value
+        return None
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
@@ -237,6 +335,9 @@ class AppContext:
 
     def decrypt_json(self, value: str | None) -> Any:
         return self.data_protector.decrypt_json(value)
+
+    def stable_hash(self, value: str) -> str:
+        return mac_hex(self.index_secret, value)
 
     def relay_post_sync(self, domain: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         if domain not in self.config.peer_domains:

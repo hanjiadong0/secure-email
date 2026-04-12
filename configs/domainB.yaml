@@ -14,7 +14,7 @@ ollama_model: llama3.2:latest
 ollama_vision_model:
 ollama_timeout_seconds: 6.0
 hf_text_model:
-hf_vision_model:
+hf_vision_model: microsoft/Florence-2-base
 hf_device: cpu
 session_ttl_minutes: 30
 recall_window_minutes: 5

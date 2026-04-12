@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import base64
+import io
+import mimetypes
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
+from PIL import Image, UnidentifiedImageError
 
 from common.crypto import sha256_hex
 from common.schemas import (
@@ -20,15 +23,46 @@ from server.rate_limit import enforce_upload_limits
 from server.storage import AppContext
 
 
-ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg"}
-
-
-def _detect_content_type(data: bytes) -> str | None:
+def _detect_content_type(filename: str, data: bytes) -> str:
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if data.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
-    return None
+    if data.startswith(b"%PDF-"):
+        return "application/pdf"
+    if data.startswith(b"PK\x03\x04"):
+        return "application/zip"
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.verify()
+            image_format = (image.format or "").upper()
+        if image_format == "PNG":
+            return "image/png"
+        if image_format in {"JPG", "JPEG"}:
+            return "image/jpeg"
+        if image_format:
+            return f"image/{image_format.lower()}"
+    except (UnidentifiedImageError, OSError, ValueError):
+        pass
+    guessed_type, _ = mimetypes.guess_type(filename)
+    if guessed_type and guessed_type.startswith("image/"):
+        # Do not trust extension-only image types if bytes are not valid image data.
+        return "application/octet-stream"
+    return guessed_type or "application/octet-stream"
+
+
+def _default_attachment_analysis(filename: str, content_type: str) -> dict:
+    return {
+        "summary": f"Stored as {content_type}",
+        "labels": ["attachment", content_type.split("/", 1)[0]],
+        "suspicious": False,
+        "risk_score": 0,
+        "reasons": [],
+        "backend": "non_image_attachment",
+        "preview_ready": False,
+        "transform_modes": [],
+        "source_filename": filename,
+    }
 
 
 def _blob_path(ctx: AppContext, blob_key: str) -> Path:
@@ -76,20 +110,22 @@ def store_attachment_bytes(
     *,
     analysis: dict | None = None,
 ) -> AttachmentMeta:
-    suffix = Path(filename).suffix.lower()
-    if suffix not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Only PNG and JPEG attachments are allowed.")
+    if not filename.strip():
+        raise HTTPException(status_code=400, detail="Attachment filename is required.")
     if len(data) > ctx.config.max_attachment_bytes:
         raise HTTPException(status_code=400, detail="Attachment exceeds the 5MB limit.")
-    content_type = _detect_content_type(data)
-    if not content_type:
-        raise HTTPException(status_code=400, detail="Attachment magic bytes do not match PNG/JPEG.")
-    resolved_analysis = analysis or analyze_attachment_image(
-        config=ctx.config,
-        filename=filename,
-        content_type=content_type,
-        data=data,
-    )
+    content_type = _detect_content_type(filename, data)
+    if analysis is not None:
+        resolved_analysis = analysis
+    elif content_type.startswith("image/"):
+        resolved_analysis = analyze_attachment_image(
+            config=ctx.config,
+            filename=filename,
+            content_type=content_type,
+            data=data,
+        )
+    else:
+        resolved_analysis = _default_attachment_analysis(filename, content_type)
     blob_key = sha256_hex(data)
     path = _blob_path(ctx, blob_key)
     with ctx.connect() as conn:
@@ -233,6 +269,8 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
         )
         row = _resolve_attachment_row_for_user(ctx, attachment_id, user["email"])
         source_filename = ctx.decrypt_text(row["filename"])
+        if not str(row["content_type"]).lower().startswith("image/"):
+            raise HTTPException(status_code=400, detail="Attachment transform is only available for image attachments.")
         raw = Path(row["path"]).read_bytes()
         try:
             transformed_name, transformed_bytes, analysis_payload = transform_attachment_image(

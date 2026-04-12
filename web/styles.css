@@ -150,6 +150,10 @@ textarea {
   grid-column: span 2;
 }
 
+.security-panel {
+  grid-column: span 3;
+}
+
 .mailbox-panel,
 .detail-panel {
   grid-column: span 1;
@@ -198,6 +202,17 @@ label {
   display: grid;
   gap: 6px;
   font-size: 0.94rem;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0 2px;
+}
+
+.toggle-row input {
+  width: auto;
 }
 
 input,
@@ -478,6 +493,31 @@ button:disabled {
   border: 1px solid var(--line);
 }
 
+.security-images {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.security-image-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.security-image-card img {
+  width: 100%;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.7);
+  min-height: 220px;
+  object-fit: cover;
+}
+
 .security-box {
   padding: 14px;
   border-radius: var(--radius-md);
@@ -526,6 +566,7 @@ button:disabled {
   .compose-panel,
   .auth-panel,
   .utility-panel,
+  .security-panel,
   .mailbox-panel,
   .detail-panel {
     grid-column: span 1;
@@ -546,6 +587,10 @@ button:disabled {
 
   .status-grid,
   .meta-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .security-images {
     grid-template-columns: 1fr;
   }
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 
 from client.api import ApiClient
 from client.quick_reply import choose_reply_text
@@ -27,6 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
     login.add_argument("--email", required=True)
     login.add_argument("--password", required=True)
 
+    e2e_init = sub.add_parser("e2e-init")
+    e2e_init.add_argument("--email", required=True)
+
+    e2e_key = sub.add_parser("e2e-key")
+    e2e_key.add_argument("--email", required=True)
+
     for name in ["inbox", "sent", "drafts", "todos"]:
         cmd = sub.add_parser(name)
         cmd.add_argument("--email", required=True)
@@ -47,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--body", required=True)
     send.add_argument("--attachments", default="", help="Comma-separated attachment IDs")
     send.add_argument("--thread-id", default=None)
+    send.add_argument("--e2e", action="store_true")
 
     draft = sub.add_parser("draft")
     draft.add_argument("--email", required=True)
@@ -112,6 +120,10 @@ def main() -> None:
             print_json_block(client.register(args.email, args.password, args.confirm_password))
         elif args.command == "login":
             print_json_block(client.login(args.email, args.password))
+        elif args.command == "e2e-init":
+            print_json_block(asdict(client.ensure_e2e_identity()))
+        elif args.command == "e2e-key":
+            print_json_block(client.my_e2e_key())
         elif args.command == "upload":
             print_json_block(client.upload_attachment(args.file))
         elif args.command == "inbox":
@@ -125,16 +137,27 @@ def main() -> None:
         elif args.command == "message":
             print_json_block(client.message(args.message_id))
         elif args.command == "send":
-            print_json_block(
-                client.send_mail(
-                    to=_split_csv(args.to),
-                    cc=_split_csv(args.cc),
-                    subject=args.subject,
-                    body_text=args.body,
-                    attachment_ids=_split_csv(args.attachments),
-                    thread_id=args.thread_id,
+            if args.e2e:
+                print_json_block(
+                    client.send_mail_e2e(
+                        to=_split_csv(args.to),
+                        cc=_split_csv(args.cc),
+                        subject=args.subject,
+                        body_text=args.body,
+                        thread_id=args.thread_id,
+                    )
                 )
-            )
+            else:
+                print_json_block(
+                    client.send_mail(
+                        to=_split_csv(args.to),
+                        cc=_split_csv(args.cc),
+                        subject=args.subject,
+                        body_text=args.body,
+                        attachment_ids=_split_csv(args.attachments),
+                        thread_id=args.thread_id,
+                    )
+                )
         elif args.command == "draft":
             print_json_block(
                 client.save_draft(

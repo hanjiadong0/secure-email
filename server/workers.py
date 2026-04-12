@@ -124,6 +124,7 @@ def _process_local_delivery(ctx: AppContext, payload: dict[str, Any]) -> None:
             body_text=payload["body_text"],
             attachments=payload["attachments"],
             created_at=payload["created_at"],
+            e2e_envelope=payload.get("e2e_envelope"),
         )
     log_event(
         ctx,
@@ -150,6 +151,7 @@ def _process_remote_delivery(ctx: AppContext, payload: dict[str, Any]) -> None:
             "body_text": payload["body_text"],
             "created_at": payload["created_at"],
             "attachments": payload["attachments"],
+            "e2e_envelope": payload.get("e2e_envelope"),
         },
     )
     log_event(
@@ -180,6 +182,7 @@ def _process_inbound_delivery(ctx: AppContext, payload: dict[str, Any]) -> None:
             body_text=payload["body_text"],
             attachments=attachments,
             created_at=payload["created_at"],
+            e2e_envelope=payload.get("e2e_envelope"),
         )
     log_event(
         ctx,

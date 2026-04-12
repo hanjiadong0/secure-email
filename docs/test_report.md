@@ -36,7 +36,7 @@
 
 ## Execution Notes
 
-Local verification completed in a repo-local virtual environment on 2026-04-11.
+Local verification completed in a repo-local virtual environment on 2026-04-12.
 
 Command used:
 
@@ -47,7 +47,7 @@ Command used:
 Result:
 
 ```text
-18 passed in 14.21s
+20 passed in 14.12s
 ```
 
 Covered by the current automated suite:
@@ -65,10 +65,13 @@ Covered by the current automated suite:
 - attachment deduplication behavior
 - attachment analysis metadata generation
 - attachment transform route behavior
+- Florence-2 attachment-review integration path
 - encrypted-at-rest database field storage
 - local Ollama smart-module enrichment path
 - local Hugging Face smart-module enrichment path
 - local-only policy fallback when a non-local model endpoint is configured
+- ECC public-key publication and cross-domain key resolution
+- ECC end-to-end encrypted cross-domain text mail with local decryption
 - concurrent multi-client send and receive acceptance
 - recall on unread cross-domain mail
 - tampered quick-action token rejection

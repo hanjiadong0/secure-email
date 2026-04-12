@@ -114,6 +114,7 @@ Requirement:
 Implemented by:
 - Upload/download logic in [server/attachments.py](../server/attachments.py)
 - Browser upload and preview in [web/app.js](../web/app.js)
+- Florence-2-backed attachment review in [server/image_ai.py](../server/image_ai.py)
 
 Requirement:
 - Mail recall.
@@ -136,6 +137,7 @@ Requirement:
 
 Implemented by:
 - Local Ollama-backed smart analysis with heuristic fallback
+- Florence-2-backed attachment analysis
 - Keyword extraction with stopword filtering
 - Mail classification
 - Fuzzy search
@@ -255,8 +257,8 @@ Delivered as:
 
 ## Bonus Items
 
-Delivered as design/analysis docs:
+Delivered as implementation or design/analysis docs:
 - Malicious mail script PoC discussion: [docs/malicious_mail_poc.md](./malicious_mail_poc.md)
-- End-to-end encryption design: [docs/end_to_end_encryption_design.md](./end_to_end_encryption_design.md)
+- End-to-end encryption implementation and design notes: [docs/end_to_end_encryption_design.md](./end_to_end_encryption_design.md)
 - Audit logging and anomaly alerting: [docs/alerting_and_audit.md](./alerting_and_audit.md)
 - P2P mail feasibility: [docs/p2p_feasibility.md](./p2p_feasibility.md)

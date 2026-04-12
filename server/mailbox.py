@@ -14,6 +14,7 @@ from common.schemas import (
     GroupCreateRequest,
     GroupMemberRequest,
     GroupSendRequest,
+    MailboxDashboardResponse,
     MailSummary,
     RecallRequest,
     SearchResponse,
@@ -28,6 +29,12 @@ from server.logging import log_event
 from server.rate_limit import enforce_send_limits
 from server.smart import analyze_message_features
 from server.storage import AppContext
+
+
+E2E_SUBJECT_PLACEHOLDER = "[End-to-end encrypted message]"
+E2E_BODY_PLACEHOLDER = (
+    "This message is end-to-end encrypted. Open it in a compatible client with your private key to decrypt it."
+)
 
 
 def _client_ip(request: Request) -> str:
@@ -83,32 +90,54 @@ def _build_actions(ctx: AppContext, message_id: str, recipient_email: str, subje
 
 
 def _mail_row_to_summary(ctx: AppContext, row) -> MailSummary:
+    to = ctx.decrypt_json(row["to_json"]) or []
+    cc = ctx.decrypt_json(row["cc_json"]) or []
+    attachments = [AttachmentMeta(**item) for item in (ctx.decrypt_json(row["attachments_json"]) or [])]
+    security_flags = ctx.decrypt_json(row["security_flags_json"]) or {}
+    keywords = ctx.decrypt_json(row["keywords_json"]) or []
+    quick_replies = ctx.decrypt_json(row["quick_replies_json"]) or []
+    actions = ctx.decrypt_json(row["actions_json"]) or []
+    e2e_envelope = ctx.decrypt_json(row["e2e_envelope_json"]) or {}
     return MailSummary(
         message_id=row["message_id"],
         thread_id=row["thread_id"],
         folder=row["folder"],
         delivery_state=row["delivery_state"],
         from_email=ctx.decrypt_text(row["from_email"]),
-        to=ctx.decrypt_json(row["to_json"]) or [],
-        cc=ctx.decrypt_json(row["cc_json"]) or [],
+        to=to,
+        cc=cc,
         subject=ctx.decrypt_text(row["subject"]),
         body_text=ctx.decrypt_text(row["body_text"]),
         created_at=row["created_at"],
-        attachments=[AttachmentMeta(**item) for item in (ctx.decrypt_json(row["attachments_json"]) or [])],
-        security_flags=ctx.decrypt_json(row["security_flags_json"]) or {},
-        keywords=ctx.decrypt_json(row["keywords_json"]) or [],
+        attachments=attachments,
+        security_flags=security_flags,
+        keywords=keywords,
         classification=ctx.decrypt_text(row["classification"]) or "General",
-        quick_replies=ctx.decrypt_json(row["quick_replies_json"]) or [],
-        actions=ctx.decrypt_json(row["actions_json"]) or [],
+        quick_replies=quick_replies,
+        actions=actions,
         recalled=bool(row["recalled"]),
         recall_status=row["recall_status"],
         is_read=bool(row["is_read"]),
+        e2e_encrypted=bool(e2e_envelope),
+        e2e_envelope=e2e_envelope,
+    )
+
+
+def _todo_row_to_item(ctx: AppContext, row) -> TodoItem:
+    return TodoItem(
+        id=row["id"],
+        owner_email=row["owner_email"],
+        message_id=row["message_id"],
+        title=ctx.decrypt_text(row["title"]),
+        created_at=row["created_at"],
     )
 
 
 def recipient_exists(ctx: AppContext, recipient_email: str) -> bool:
+    email = normalize_email(recipient_email)
+    email_hash = ctx.stable_hash(email)
     with ctx.connect() as conn:
-        row = conn.execute("SELECT 1 FROM users WHERE email = ?", (recipient_email,)).fetchone()
+        row = conn.execute("SELECT 1 FROM users WHERE email_hash = ?", (email_hash,)).fetchone()
     return row is not None
 
 
@@ -129,42 +158,59 @@ def store_mail_copy(
     is_read: bool = False,
     recalled: bool = False,
     recall_status: str | None = None,
+    e2e_envelope: dict[str, Any] | None = None,
 ) -> MailSummary:
     normalized_attachments = [
         item if isinstance(item, dict) else item.model_dump()
         for item in attachments
     ]
     resolved_delivery_state = delivery_state or {"draft": "draft", "sent": "delivered"}.get(folder, "delivered")
+    normalized_e2e_envelope = e2e_envelope or {}
     with ctx.connect() as conn:
-        corpus_rows = conn.execute(
-            "SELECT subject, body_text FROM mail_items WHERE owner_email = ? ORDER BY created_at DESC LIMIT 50",
-            (owner_email,),
-        ).fetchall()
-        corpus = [f"{ctx.decrypt_text(row['subject'])} {ctx.decrypt_text(row['body_text'])}" for row in corpus_rows]
-        smart = analyze_message_features(
-            config=ctx.config,
-            sender_email=from_email,
-            subject=subject,
-            body_text=body_text,
-            corpus=corpus,
-        )
-        keywords = smart["keywords"]
-        classification = smart["classification"]
-        security_flags = smart["security_flags"]
-        if security_flags.get("suspicious"):
-            classification = "Suspicious"
-            if folder == "inbox":
-                log_event(
-                    ctx,
-                    "suspicious_mail_detected",
-                    actor_email=from_email,
-                    owner_email=owner_email,
-                    message_id=message_id,
-                    score=security_flags.get("phishing_score", 0),
-                    reasons=security_flags.get("reasons", []),
-                )
-        quick_replies = smart["quick_replies"] if folder == "inbox" else []
-        actions = _build_actions(ctx, message_id, owner_email, subject) if folder == "inbox" and not recalled else []
+        if normalized_e2e_envelope:
+            stored_subject = E2E_SUBJECT_PLACEHOLDER
+            stored_body_text = E2E_BODY_PLACEHOLDER
+            keywords = []
+            classification = "Encrypted"
+            security_flags = {
+                "e2e_encrypted": True,
+                "server_content_visibility": "ciphertext_only",
+            }
+            quick_replies = []
+            actions = []
+        else:
+            stored_subject = subject
+            stored_body_text = body_text
+            corpus_rows = conn.execute(
+                "SELECT subject, body_text FROM mail_items WHERE owner_email = ? ORDER BY created_at DESC LIMIT 50",
+                (owner_email,),
+            ).fetchall()
+            corpus = [f"{ctx.decrypt_text(row['subject'])} {ctx.decrypt_text(row['body_text'])}" for row in corpus_rows]
+            smart = analyze_message_features(
+                config=ctx.config,
+                sender_email=from_email,
+                subject=subject,
+                body_text=body_text,
+                corpus=corpus,
+                openai_api_key=ctx.get_secret("openai_api_key") or ctx.config.openai_api_key,
+            )
+            keywords = smart["keywords"]
+            classification = smart["classification"]
+            security_flags = smart["security_flags"]
+            if security_flags.get("suspicious"):
+                classification = "Suspicious"
+                if folder == "inbox":
+                    log_event(
+                        ctx,
+                        "suspicious_mail_detected",
+                        actor_email=from_email,
+                        owner_email=owner_email,
+                        message_id=message_id,
+                        score=security_flags.get("phishing_score", 0),
+                        reasons=security_flags.get("reasons", []),
+                    )
+            quick_replies = smart["quick_replies"] if folder == "inbox" else []
+            actions = _build_actions(ctx, message_id, owner_email, subject) if folder == "inbox" and not recalled else []
         existing = conn.execute(
             "SELECT mailbox_item_id FROM mail_items WHERE owner_email = ? AND folder = ? AND message_id = ?",
             (owner_email, folder, message_id),
@@ -174,8 +220,8 @@ def store_mail_copy(
             conn.execute(
                 "INSERT INTO mail_items(mailbox_item_id, message_id, thread_id, owner_email, folder, delivery_state, from_email, to_json, cc_json, "
                 "subject, body_text, attachments_json, created_at, security_flags_json, actions_json, quick_replies_json, "
-                "keywords_json, classification, recalled, recall_status, is_read) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "keywords_json, classification, e2e_envelope_json, recalled, recall_status, is_read) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     mailbox_item_id,
                     message_id,
@@ -186,8 +232,8 @@ def store_mail_copy(
                     ctx.encrypt_text(from_email),
                     ctx.encrypt_json(to),
                     ctx.encrypt_json(cc),
-                    ctx.encrypt_text(subject),
-                    ctx.encrypt_text(body_text),
+                    ctx.encrypt_text(stored_subject),
+                    ctx.encrypt_text(stored_body_text),
                     ctx.encrypt_json(normalized_attachments),
                     created_at,
                     ctx.encrypt_json(security_flags),
@@ -195,6 +241,7 @@ def store_mail_copy(
                     ctx.encrypt_json(quick_replies),
                     ctx.encrypt_json(keywords),
                     ctx.encrypt_text(classification),
+                    ctx.encrypt_json(normalized_e2e_envelope),
                     int(recalled),
                     recall_status,
                     int(is_read),
@@ -204,15 +251,15 @@ def store_mail_copy(
             conn.execute(
                 "UPDATE mail_items SET thread_id = ?, delivery_state = ?, from_email = ?, to_json = ?, cc_json = ?, subject = ?, body_text = ?, "
                 "attachments_json = ?, created_at = ?, security_flags_json = ?, actions_json = ?, quick_replies_json = ?, keywords_json = ?, "
-                "classification = ?, recalled = ?, recall_status = ?, is_read = ? WHERE mailbox_item_id = ?",
+                "classification = ?, e2e_envelope_json = ?, recalled = ?, recall_status = ?, is_read = ? WHERE mailbox_item_id = ?",
                 (
                     thread_id,
                     resolved_delivery_state,
                     ctx.encrypt_text(from_email),
                     ctx.encrypt_json(to),
                     ctx.encrypt_json(cc),
-                    ctx.encrypt_text(subject),
-                    ctx.encrypt_text(body_text),
+                    ctx.encrypt_text(stored_subject),
+                    ctx.encrypt_text(stored_body_text),
                     ctx.encrypt_json(normalized_attachments),
                     created_at,
                     ctx.encrypt_json(security_flags),
@@ -220,6 +267,7 @@ def store_mail_copy(
                     ctx.encrypt_json(quick_replies),
                     ctx.encrypt_json(keywords),
                     ctx.encrypt_text(classification),
+                    ctx.encrypt_json(normalized_e2e_envelope),
                     int(recalled),
                     recall_status,
                     int(is_read),
@@ -258,6 +306,15 @@ def _get_message(ctx: AppContext, owner_email: str, message_id: str) -> MailSumm
     if row is None:
         raise HTTPException(status_code=404, detail="Message not found.")
     return _mail_row_to_summary(ctx, row)
+
+
+def _list_todos(ctx: AppContext, owner_email: str) -> list[TodoItem]:
+    with ctx.connect() as conn:
+        rows = conn.execute(
+            "SELECT id, owner_email, message_id, title, created_at FROM todos WHERE owner_email = ? ORDER BY created_at DESC",
+            (owner_email,),
+        ).fetchall()
+    return [_todo_row_to_item(ctx, row) for row in rows]
 
 
 def refresh_sent_delivery_state(ctx: AppContext, owner_email: str, message_id: str) -> str:
@@ -362,6 +419,8 @@ async def dispatch_message(ctx: AppContext, sender_email: str, payload: SendMail
     delivery_recipients = _dedupe_emails([*recipients, *cc])
     if not delivery_recipients:
         raise HTTPException(status_code=400, detail="At least one recipient is required.")
+    if payload.e2e_envelope and payload.attachment_ids:
+        raise HTTPException(status_code=400, detail="E2E encryption currently supports text-only messages.")
     attachment_metas, relay_attachments = export_attachment_payloads(ctx, payload.attachment_ids, sender_email)
     created_at = isoformat_utc()
     message_id = new_id()
@@ -395,6 +454,7 @@ async def dispatch_message(ctx: AppContext, sender_email: str, payload: SendMail
         created_at=created_at,
         delivery_state="queued" if (local_recipients or remote_recipients) else "delivered",
         is_read=True,
+        e2e_envelope=payload.e2e_envelope,
     )
 
     queued_jobs = 0
@@ -412,6 +472,7 @@ async def dispatch_message(ctx: AppContext, sender_email: str, payload: SendMail
                 "body_text": payload.body_text,
                 "created_at": created_at,
                 "attachments": [item.model_dump() for item in attachment_metas],
+                "e2e_envelope": payload.e2e_envelope,
             },
             message_id=message_id,
             owner_email=sender_email,
@@ -434,6 +495,7 @@ async def dispatch_message(ctx: AppContext, sender_email: str, payload: SendMail
                 "body_text": payload.body_text,
                 "created_at": created_at,
                 "attachments": relay_attachments,
+                "e2e_envelope": payload.e2e_envelope,
             },
             message_id=message_id,
             owner_email=sender_email,
@@ -459,6 +521,33 @@ async def dispatch_message(ctx: AppContext, sender_email: str, payload: SendMail
 
 
 def register_routes(app: FastAPI, ctx: AppContext) -> None:
+    @app.get("/v1/mail/dashboard", response_model=MailboxDashboardResponse)
+    def dashboard(authorization: str | None = Header(default=None)) -> MailboxDashboardResponse:
+        user = get_current_user(ctx, authorization)
+        with ctx.connect() as conn:
+            inbox_rows = conn.execute(
+                "SELECT * FROM mail_items WHERE owner_email = ? AND folder = ? ORDER BY created_at DESC",
+                (user["email"], "inbox"),
+            ).fetchall()
+            sent_rows = conn.execute(
+                "SELECT * FROM mail_items WHERE owner_email = ? AND folder = ? ORDER BY created_at DESC",
+                (user["email"], "sent"),
+            ).fetchall()
+            draft_rows = conn.execute(
+                "SELECT * FROM mail_items WHERE owner_email = ? AND folder = ? ORDER BY created_at DESC",
+                (user["email"], "draft"),
+            ).fetchall()
+            todo_rows = conn.execute(
+                "SELECT id, owner_email, message_id, title, created_at FROM todos WHERE owner_email = ? ORDER BY created_at DESC",
+                (user["email"],),
+            ).fetchall()
+        return MailboxDashboardResponse(
+            inbox=[_mail_row_to_summary(ctx, row) for row in inbox_rows],
+            sent=[_mail_row_to_summary(ctx, row) for row in sent_rows],
+            drafts=[_mail_row_to_summary(ctx, row) for row in draft_rows],
+            todos=[_todo_row_to_item(ctx, row) for row in todo_rows],
+        )
+
     @app.get("/v1/mail/inbox", response_model=list[MailSummary])
     def inbox(authorization: str | None = Header(default=None)) -> list[MailSummary]:
         user = get_current_user(ctx, authorization)
@@ -493,7 +582,10 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
 
     @app.post("/v1/mail/send")
     async def send(payload: SendMailRequest, request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-        user = verify_authenticated_request(ctx, request, authorization, payload.model_dump())
+        payload_data = payload.model_dump()
+        if payload_data.get("e2e_envelope") is None:
+            payload_data.pop("e2e_envelope", None)
+        user = verify_authenticated_request(ctx, request, authorization, payload_data)
         enforce_send_limits(ctx, user["email"], _client_ip(request))
         return await dispatch_message(ctx, user["email"], payload)
 
@@ -707,21 +799,7 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
     @app.get("/v1/todos", response_model=list[TodoItem])
     def todos(authorization: str | None = Header(default=None)) -> list[TodoItem]:
         user = get_current_user(ctx, authorization)
-        with ctx.connect() as conn:
-            rows = conn.execute(
-                "SELECT id, owner_email, message_id, title, created_at FROM todos WHERE owner_email = ? ORDER BY created_at DESC",
-                (user["email"],),
-            ).fetchall()
-        return [
-            TodoItem(
-                id=row["id"],
-                owner_email=row["owner_email"],
-                message_id=row["message_id"],
-                title=ctx.decrypt_text(row["title"]),
-                created_at=row["created_at"],
-            )
-            for row in rows
-        ]
+        return _list_todos(ctx, user["email"])
 
     @app.get("/v1/mail/search", response_model=SearchResponse)
     def search(q: str, authorization: str | None = Header(default=None)) -> SearchResponse:
