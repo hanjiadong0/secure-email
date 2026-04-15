@@ -1,0 +1,43 @@
+{
+  "package": "secure_email_final_submission",
+  "included_files": [
+    "README.md",
+    "pyproject.toml"
+  ],
+  "included_dirs": [
+    "client",
+    "common",
+    "configs",
+    "docs",
+    "scripts",
+    "server",
+    "tests",
+    "web"
+  ],
+  "excluded_runtime_dirs": [
+    ".client_state",
+    ".pytest_cache",
+    ".pytest_tmp",
+    ".venv",
+    "__pycache__",
+    "data",
+    "manual_test_root",
+    "secure_email.egg-info",
+    "test_artifacts",
+    "test_tmp_dir"
+  ],
+  "excluded_suffixes": [
+    ".aux",
+    ".log",
+    ".nav",
+    ".out",
+    ".pyc",
+    ".snm",
+    ".toc"
+  ],
+  "security_lab_files": [
+    "attacker_vs_defender.png",
+    "scenario_matrix.png",
+    "security_report.json"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "status": "ok",
+  "generated_at": "2026-04-14T13:49:07+00:00",
+  "scenarios": [
+    {
+      "scenario": "100 different users each send 1 mail",
+      "attempted_sends": 100,
+      "accepted_sends": 100,
+      "rejected_sends": 0,
+      "receiver_inbox_new_messages": 100,
+      "peak_polled_inbox_size": 20,
+      "duration_seconds": 11.2,
+      "result": "pass"
+    },
+    {
+      "scenario": "1 user attempts 100 mails",
+      "attempted_sends": 100,
+      "accepted_sends": 30,
+      "rate_limited": 70,
+      "other_failures": 0,
+      "receiver_inbox_new_messages": 30,
+      "duration_seconds": 4.97,
+      "service_still_healthy": true,
+      "result": "pass"
+    }
+  ]
+}

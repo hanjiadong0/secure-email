@@ -5,7 +5,7 @@ from datetime import timedelta
 
 from common.crypto import mac_hex
 from common.schemas import RelayIncomingRequest, RelayRecallRequest
-from common.utils import email_domain, isoformat_utc, json_dumps, parse_timestamp, utcnow
+from common.utils import email_domain, is_valid_email, isoformat_utc, json_dumps, parse_timestamp, utcnow
 from server.logging import log_event
 from server.mailbox import apply_recall, cancel_pending_delivery_jobs, recipient_exists
 from server.storage import AppContext
@@ -80,6 +80,9 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
             x_relay_mac,
             payload.model_dump(),
         )
+        invalid_format = [recipient for recipient in payload.recipients if not is_valid_email(recipient)]
+        if invalid_format:
+            raise HTTPException(status_code=400, detail=f"Invalid recipient address: {', '.join(invalid_format)}")
         invalid = [recipient for recipient in payload.recipients if email_domain(recipient) != ctx.config.domain]
         if invalid:
             raise HTTPException(status_code=400, detail=f"Recipient(s) not local to {ctx.config.domain}: {', '.join(invalid)}")
@@ -114,6 +117,9 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
             x_relay_mac,
             payload.model_dump(),
         )
+        invalid_format = [recipient for recipient in payload.recipients if not is_valid_email(recipient)]
+        if invalid_format:
+            raise HTTPException(status_code=400, detail=f"Invalid recipient address: {', '.join(invalid_format)}")
         statuses = cancel_pending_delivery_jobs(ctx, payload.message_id, payload.recipients, ("inbound_delivery",))
         remaining = [recipient for recipient in payload.recipients if recipient not in statuses]
         statuses.update(apply_recall(ctx, payload.message_id, remaining))

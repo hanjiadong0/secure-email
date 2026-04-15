@@ -20,7 +20,7 @@ Requirement:
 - Do not directly use a mature open-source email system as the core implementation.
 
 Implemented by:
-- Custom HTTPS/JSON protocol and local mail lifecycle
+- Custom HTTP/JSON mail protocol with optional TLS support and local mail lifecycle
 - No Postfix/Dovecot/SMTP stack used as the runtime core
 
 Requirement:
@@ -37,6 +37,7 @@ Requirement:
 Implemented by:
 - Test suite in [tests/test_secure_mail.py](../tests/test_secure_mail.py)
 - Test summary in [docs/test_report.md](./test_report.md)
+- Stress-scenario result artifact in [docs/stress_test_results.md](./stress_test_results.md)
 - Demo and stress scripts in [scripts](../scripts)
 
 ## Mandatory Function 1: Server Management
@@ -209,6 +210,7 @@ Requirement:
 Covered by:
 - Concurrent acceptance test in [tests/test_secure_mail.py](../tests/test_secure_mail.py)
 - Stress script in [scripts/stress_test.py](../scripts/stress_test.py)
+- Saved run result in [docs/stress_test_results.md](./stress_test_results.md)
 
 Requirement:
 - Brute-force login protection triggers.
@@ -256,6 +258,7 @@ Delivered as:
 - [scripts](../scripts)
 - [docs/protocol.md](./protocol.md)
 - [docs/test_report.md](./test_report.md)
+- [docs/stress_test_results.md](./stress_test_results.md)
 - [docs/threat_model.md](./threat_model.md)
 
 ## Bonus Items

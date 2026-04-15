@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Secure Email Console</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=20260413r">
   </head>
   <body>
     <div class="page-shell">
@@ -27,6 +27,11 @@
             <div>
               <span>User</span>
               <strong id="sessionUser">Guest</strong>
+            </div>
+            <div>
+              <span>Smart</span>
+              <strong id="smartStatus">Checking</strong>
+              <small id="smartStatusDetail" class="status-detail">Waiting for smart-module health.</small>
             </div>
           </div>
           <button type="button" class="ghost-button" id="logoutButton">Log Out</button>
@@ -64,8 +69,44 @@
           <form id="composeForm" class="compose-form">
             <label>To <input type="text" id="composeTo" placeholder="bob@b.test, team@a.test"></label>
             <label>Cc <input type="text" id="composeCc" placeholder="optional recipients"></label>
+            <div class="compact compose-groups">
+              <h3>Saved Groups</h3>
+              <div class="group-toolbar">
+                <label>
+                  Choose Group
+                  <select id="composeGroupPicker">
+                    <option value="">No saved group selected</option>
+                  </select>
+                </label>
+                <div class="inline-actions">
+                  <button type="button" id="addGroupToToButton" class="secondary-button">Add To To</button>
+                  <button type="button" id="addGroupToCcButton" class="ghost-button">Add To Cc</button>
+                  <button type="button" id="editSelectedGroupButton" class="ghost-button">Edit Group</button>
+                </div>
+              </div>
+              <div class="text-list" id="composeGroupPreview">Choose a saved group to preview and insert its members.</div>
+            </div>
             <label>Subject <input type="text" id="composeSubject" placeholder="Subject line"></label>
             <label>Body <textarea id="composeBody" rows="7" placeholder="Write your message"></textarea></label>
+            <section class="compact compose-assist-panel">
+              <div class="compose-assist-header">
+                <div>
+                  <h3>AI Draft Helper</h3>
+                  <p>Use the smart module to draft, continue, or polish this email before sending.</p>
+                </div>
+              </div>
+              <label>
+                What should the assistant help with?
+                <textarea id="composeAssistPrompt" rows="2" placeholder="Write a polite follow-up about the project timeline and ask for feedback."></textarea>
+              </label>
+              <div class="inline-actions">
+                <button type="button" id="composeAssistDraftButton" class="secondary-button">Draft With AI</button>
+                <button type="button" id="composeAssistContinueButton" class="ghost-button">Continue Draft</button>
+                <button type="button" id="composeAssistPolishButton" class="ghost-button">Polish Draft</button>
+                <button type="button" id="composeAssistUndoButton" class="ghost-button" disabled>Undo Last AI Change</button>
+              </div>
+              <div class="text-list" id="composeAssistStatus">The helper can use your prompt plus the current subject and body.</div>
+            </section>
             <label class="toggle-row">
               <input type="checkbox" id="composeE2E">
               <span>End-to-end encrypt this mail with ECC (text-only for now)</span>
@@ -81,7 +122,22 @@
               <button type="button" id="clearComposeButton" class="ghost-button">Clear Form</button>
             </div>
             <div class="text-list" id="composeE2EHint">Attachments are disabled when ECC end-to-end encryption is enabled.</div>
+            <div id="selectedAttachmentPreview" class="selected-attachment-preview"></div>
             <div class="chip-list" id="attachmentList"></div>
+            <section class="compact attachment-library">
+              <div class="attachment-library-header">
+                <div>
+                  <h3>Saved Attachments</h3>
+                  <p>Reuse uploaded files, open them, or delete unused ones.</p>
+                </div>
+                <label>
+                  Find Saved File
+                  <input type="text" id="attachmentLibrarySearch" placeholder="invoice, png, report">
+                </label>
+              </div>
+              <div class="text-list" id="attachmentLibrarySummary">Sign in to manage your saved attachments.</div>
+              <div id="attachmentLibraryList" class="attachment-library-list"></div>
+            </section>
           </form>
         </section>
 
@@ -102,40 +158,16 @@
               <div id="searchContacts" class="text-list"></div>
             </form>
             <form id="groupCreateForm" class="stack-form compact">
-              <h3>Save Recipient List</h3>
+              <h3>Save Or Edit Group</h3>
               <label>List Name <input type="text" id="groupName" placeholder="project-team"></label>
               <label>Members <input type="text" id="groupMembers" placeholder="alice@a.test, bob@b.test"></label>
-              <button type="submit">Save List</button>
+              <div class="text-list">Saving with the same name updates the existing group.</div>
+              <button type="submit">Save Group</button>
             </form>
-            <form id="groupSendForm" class="stack-form compact">
-              <h3>Send To A List</h3>
-              <label>List Name <input type="text" id="groupSendName" placeholder="project-team"></label>
-              <label>Subject <input type="text" id="groupSendSubject" placeholder="Subject for the list"></label>
-              <label>Body <textarea id="groupSendBody" rows="4" placeholder="Message for the list"></textarea></label>
-              <button type="submit">Send To List</button>
-            </form>
-          </div>
-        </section>
-
-        <section class="panel security-panel">
-          <div class="panel-header">
-            <h2>Security Drill</h2>
-            <p>Run attacker-versus-defender simulation and review generated evidence.</p>
-          </div>
-          <div class="inline-actions">
-            <button type="button" id="runSecuritySimulationButton">Run Security Simulation</button>
-            <button type="button" id="refreshSecurityEvidenceButton" class="secondary-button">Refresh Evidence</button>
-          </div>
-          <div id="securitySummary" class="text-list">No security evidence generated yet.</div>
-          <div class="security-images">
-            <article class="security-image-card">
-              <strong>Attacker vs Defender</strong>
-              <img id="securityAttackerDefenderImage" alt="Attacker versus defender simulation chart" loading="lazy">
-            </article>
-            <article class="security-image-card">
-              <strong>Scenario Matrix</strong>
-              <img id="securityScenarioMatrixImage" alt="Security simulation matrix" loading="lazy">
-            </article>
+            <section class="stack-form compact">
+              <h3>Saved Groups</h3>
+              <div id="savedGroupsList" class="group-list"></div>
+            </section>
           </div>
         </section>
 
@@ -170,7 +202,16 @@
       </main>
     </div>
 
+    <div id="imagePreviewModal" class="image-preview-modal" hidden>
+      <div class="image-preview-dialog">
+        <div class="image-preview-toolbar">
+          <strong id="imagePreviewCaption">Attachment Preview</strong>
+          <button type="button" class="ghost-button" id="closeImagePreviewButton">Close</button>
+        </div>
+        <img id="imagePreviewImage" alt="Attachment preview">
+      </div>
+    </div>
     <div id="toastRegion" class="toast-region" aria-live="polite"></div>
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=20260413r" defer></script>
   </body>
 </html>

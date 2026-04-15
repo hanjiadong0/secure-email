@@ -1,0 +1,7 @@
+{"actor_email": "victim-lock@sim-a.test", "alert_type": "login_lockout", "created_at": "2026-04-13T15:50:27+00:00", "details": {"ip": "testclient", "retry_after": 120}, "severity": "high"}
+{"actor_email": "victim-lock@sim-a.test", "alert_type": "login_rate_limited", "created_at": "2026-04-13T15:50:27+00:00", "details": {"ip_address": "testclient", "retry_after": 119}, "severity": "warning"}
+{"actor_email": "victim-lock@sim-a.test", "alert_type": "login_rate_limited", "created_at": "2026-04-13T15:50:27+00:00", "details": {"ip_address": "testclient", "retry_after": 119}, "severity": "warning"}
+{"actor_email": "replay-attacker@sim-a.test", "alert_type": "request_replay_rejected", "created_at": "2026-04-13T15:50:27+00:00", "details": {"path": "/v1/groups/create", "reason": "sequence"}, "severity": "high"}
+{"actor_email": null, "alert_type": "send_rate_limited", "created_at": "2026-04-13T15:50:28+00:00", "details": {"amount": 1, "bucket": "send:user:spam-source@sim-a.test", "limit": 3, "window_seconds": 60}, "severity": "warning"}
+{"actor_email": null, "alert_type": "send_rate_limited", "created_at": "2026-04-13T15:50:28+00:00", "details": {"amount": 1, "bucket": "send:user:spam-source@sim-a.test", "limit": 3, "window_seconds": 60}, "severity": "warning"}
+{"actor_email": null, "alert_type": "send_rate_limited", "created_at": "2026-04-13T15:50:28+00:00", "details": {"amount": 1, "bucket": "send:user:spam-source@sim-a.test", "limit": 3, "window_seconds": 60}, "severity": "warning"}

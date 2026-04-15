@@ -12,6 +12,7 @@ from common.schemas import (
     CalendarEvent,
     ContactSuggestion,
     DraftRequest,
+    GroupSummary,
     GroupCreateRequest,
     GroupMemberRequest,
     GroupSendRequest,
@@ -23,7 +24,7 @@ from common.schemas import (
     TodoItem,
 )
 from common.text_features import fuzzy_score
-from common.utils import email_domain, isoformat_utc, new_id, normalize_email, parse_timestamp, utcnow
+from common.utils import email_domain, is_valid_email, isoformat_utc, new_id, normalize_email, parse_timestamp, utcnow
 from server.attachments import export_attachment_payloads, load_attachment_metas
 from server.auth import get_current_user, verify_authenticated_request
 from server.logging import log_event
@@ -76,6 +77,21 @@ def _dedupe_emails(items: list[str]) -> list[str]:
         seen.add(normalized)
         normalized_items.append(normalized)
     return normalized_items
+
+
+def _validated_email_list(items: list[str], field_name: str) -> list[str]:
+    normalized_items = _dedupe_emails(items)
+    invalid = [item for item in normalized_items if not is_valid_email(item)]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid email address in {field_name}: {', '.join(invalid)}")
+    return normalized_items
+
+
+def _validated_group_name(name: str) -> str:
+    normalized = (name or "").strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Group name is required.")
+    return normalized[:80]
 
 
 def _calendar_title_from_subject(subject: str) -> str:
@@ -198,6 +214,14 @@ def _calendar_row_to_item(ctx: AppContext, row) -> CalendarEvent:
         duration_minutes=row["duration_minutes"],
         created_at=row["created_at"],
         source_action=row["source_action"],
+    )
+
+
+def _group_row_to_summary(ctx: AppContext, row) -> GroupSummary:
+    return GroupSummary(
+        name=row["name"],
+        members=ctx.decrypt_json(row["members_json"]) or [],
+        created_at=row["created_at"],
     )
 
 
@@ -406,6 +430,15 @@ def _list_calendar_events(ctx: AppContext, owner_email: str) -> list[CalendarEve
     return [_calendar_row_to_item(ctx, row) for row in rows]
 
 
+def _list_groups(ctx: AppContext, owner_email: str) -> list[GroupSummary]:
+    with ctx.connect() as conn:
+        rows = conn.execute(
+            "SELECT name, members_json, created_at FROM groups_store WHERE owner_email = ? ORDER BY created_at DESC, name ASC",
+            (owner_email,),
+        ).fetchall()
+    return [_group_row_to_summary(ctx, row) for row in rows]
+
+
 def refresh_sent_delivery_state(ctx: AppContext, owner_email: str, message_id: str) -> str:
     with ctx.connect() as conn:
         rows = conn.execute(
@@ -503,8 +536,8 @@ def apply_recall(ctx: AppContext, message_id: str, recipients: list[str]) -> dic
 
 
 async def dispatch_message(ctx: AppContext, sender_email: str, payload: SendMailRequest) -> dict[str, Any]:
-    recipients = _dedupe_emails(payload.to)
-    cc = _dedupe_emails(payload.cc)
+    recipients = _validated_email_list(payload.to, "to")
+    cc = _validated_email_list(payload.cc, "cc")
     delivery_recipients = _dedupe_emails([*recipients, *cc])
     if not delivery_recipients:
         raise HTTPException(status_code=400, detail="At least one recipient is required.")
@@ -635,12 +668,17 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
                 "FROM calendar_events WHERE owner_email = ? ORDER BY starts_at DESC",
                 (user["email"],),
             ).fetchall()
+            group_rows = conn.execute(
+                "SELECT name, members_json, created_at FROM groups_store WHERE owner_email = ? ORDER BY created_at DESC, name ASC",
+                (user["email"],),
+            ).fetchall()
         return MailboxDashboardResponse(
             inbox=[_mail_row_to_summary(ctx, row) for row in inbox_rows],
             sent=[_mail_row_to_summary(ctx, row) for row in sent_rows],
             drafts=[_mail_row_to_summary(ctx, row) for row in draft_rows],
             todos=[_todo_row_to_item(ctx, row) for row in todo_rows],
             calendar_events=[_calendar_row_to_item(ctx, row) for row in calendar_rows],
+            groups=[_group_row_to_summary(ctx, row) for row in group_rows],
         )
 
     @app.get("/v1/mail/inbox", response_model=list[MailSummary])
@@ -702,6 +740,7 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
                     subject=payload.subject,
                     body_text=payload.body_text,
                     attachment_ids=payload.attachment_ids,
+                    thread_id=payload.thread_id,
                 ),
             )
             return {"status": "sent_from_draft", **result}
@@ -710,16 +749,17 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
         message_id = payload.message_id or new_id()
         with ctx.connect() as conn:
             existing = conn.execute(
-                "SELECT mailbox_item_id FROM mail_items WHERE owner_email = ? AND message_id = ? AND folder = 'draft'",
+                "SELECT mailbox_item_id, thread_id FROM mail_items WHERE owner_email = ? AND message_id = ? AND folder = 'draft'",
                 (user["email"], message_id),
             ).fetchone()
+            draft_thread_id = payload.thread_id or (existing["thread_id"] if existing is not None else new_id())
             if existing is None:
                 store_mail_copy(
                     ctx,
                     owner_email=user["email"],
                     folder="draft",
                     message_id=message_id,
-                    thread_id=new_id(),
+                    thread_id=draft_thread_id,
                     from_email=user["email"],
                     to=payload.to,
                     cc=payload.cc,
@@ -731,9 +771,10 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
                 )
             else:
                 conn.execute(
-                    "UPDATE mail_items SET to_json = ?, cc_json = ?, subject = ?, body_text = ?, attachments_json = ? "
+                    "UPDATE mail_items SET thread_id = ?, to_json = ?, cc_json = ?, subject = ?, body_text = ?, attachments_json = ? "
                     "WHERE owner_email = ? AND message_id = ? AND folder = 'draft'",
                     (
+                        draft_thread_id,
                         ctx.encrypt_json(payload.to),
                         ctx.encrypt_json(payload.cc),
                         ctx.encrypt_text(payload.subject),
@@ -805,39 +846,50 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
     @app.post("/v1/groups/create")
     def group_create(payload: GroupCreateRequest, request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         user = verify_authenticated_request(ctx, request, authorization, payload.model_dump())
-        members = [normalize_email(item) for item in payload.members]
+        group_name = _validated_group_name(payload.name)
+        members = _validated_email_list(payload.members, "members")
         with ctx.connect() as conn:
             conn.execute(
                 "INSERT INTO groups_store(name, owner_email, members_json, created_at) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(name, owner_email) DO UPDATE SET members_json = excluded.members_json",
-                (payload.name, user["email"], ctx.encrypt_json(sorted(set(members))), isoformat_utc()),
+                "ON CONFLICT(name, owner_email) DO UPDATE SET members_json = excluded.members_json, created_at = excluded.created_at",
+                (group_name, user["email"], ctx.encrypt_json(sorted(set(members))), isoformat_utc()),
             )
-        return {"status": "group_saved", "name": payload.name, "members": sorted(set(members))}
+        return {"status": "group_saved", "name": group_name, "members": sorted(set(members))}
 
     @app.post("/v1/groups/add_member")
     def group_add(payload: GroupMemberRequest, request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         user = verify_authenticated_request(ctx, request, authorization, payload.model_dump())
+        group_name = _validated_group_name(payload.name)
         with ctx.connect() as conn:
             row = conn.execute(
                 "SELECT members_json FROM groups_store WHERE name = ? AND owner_email = ?",
-                (payload.name, user["email"]),
+                (group_name, user["email"]),
             ).fetchone()
             if row is None:
                 raise HTTPException(status_code=404, detail="Group not found.")
-            members = sorted(set((ctx.decrypt_json(row["members_json"]) or []) + [normalize_email(payload.member_email)]))
+            member_email = normalize_email(payload.member_email)
+            if not is_valid_email(member_email):
+                raise HTTPException(status_code=400, detail=f"Invalid email address in member_email: {member_email}")
+            members = sorted(set((ctx.decrypt_json(row["members_json"]) or []) + [member_email]))
             conn.execute(
-                "UPDATE groups_store SET members_json = ? WHERE name = ? AND owner_email = ?",
-                (ctx.encrypt_json(members), payload.name, user["email"]),
+                "UPDATE groups_store SET members_json = ?, created_at = ? WHERE name = ? AND owner_email = ?",
+                (ctx.encrypt_json(members), isoformat_utc(), group_name, user["email"]),
             )
-        return {"status": "group_updated", "name": payload.name, "members": members}
+        return {"status": "group_updated", "name": group_name, "members": members}
+
+    @app.get("/v1/groups", response_model=list[GroupSummary])
+    def groups(authorization: str | None = Header(default=None)) -> list[GroupSummary]:
+        user = get_current_user(ctx, authorization)
+        return _list_groups(ctx, user["email"])
 
     @app.post("/v1/mail/send_group")
     async def group_send(payload: GroupSendRequest, request: Request, authorization: str | None = Header(default=None)) -> dict[str, Any]:
         user = verify_authenticated_request(ctx, request, authorization, await _signed_payload_from_request(request))
+        group_name = _validated_group_name(payload.group_name)
         with ctx.connect() as conn:
             row = conn.execute(
                 "SELECT members_json FROM groups_store WHERE name = ? AND owner_email = ?",
-                (payload.group_name, user["email"]),
+                (group_name, user["email"]),
             ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Group not found.")

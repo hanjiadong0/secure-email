@@ -1,14 +1,17 @@
-% Compile with: xelatex docs/secure_email_presentation.tex
+% Compile with: pdflatex -interaction=nonstopmode -halt-on-error docs/secure_email_presentation.tex
 \documentclass[aspectratio=169]{beamer}
+
+\usepackage{graphicx}
 
 \usetheme{Madrid}
 \usecolortheme{default}
 \setbeamertemplate{navigation symbols}{}
+\graphicspath{{docs/test_frontend_screenshots/}{test_frontend_screenshots/}}
 
 \title{Smart Secure Email System}
-\subtitle{Assignment-Aligned Project Presentation}
+\subtitle{Assignment-Aligned Project Presentation With Live Frontend Evidence}
 \author{Secure Email Project}
-\date{\today}
+\date{April 13, 2026}
 
 \begin{document}
 
@@ -97,15 +100,17 @@
 \begin{frame}{Client Management Requirement}
   \begin{itemize}
     \item Registration and login
-    \item Compose mail, inbox, sent, drafts
-    \item Group send and saved groups
-    \item Quick reply support with subject/thread context
-    \item Image attachment upload and preview/download
+    \item Compose mail, inbox, sent, drafts, search, and calendar / follow-up views
+    \item Saved groups integrated directly into the main compose form
+    \item Quick reply support with subject/thread context and manual compose staging
+    \item Attachment upload, saved-attachment management, preview, compression, and reuse
     \item Mail recall for sent messages
     \item Quick actions designed from the user perspective:
     \begin{itemize}
       \item add TODO
+      \item add calendar event
       \item acknowledge message
+      \item report suspicious mail
     \end{itemize}
   \end{itemize}
 \end{frame}
@@ -115,9 +120,10 @@
     \item \textbf{Keyword extraction}
     \item \textbf{Mail classification}
     \item \textbf{Fuzzy search} for messages and contacts
-    \item \textbf{Quick reply suggestions}
+    \item \textbf{Quick reply suggestions} and AI-assisted drafting
     \item \textbf{Phishing / suspicious-mail heuristics}
     \item \textbf{Attachment deduplication} as a storage-aware optimization
+    \item \textbf{Local smart module integration} through Ollama when available, with safe fallback
   \end{itemize}
 
   \vspace{0.4em}
@@ -127,6 +133,7 @@
 \begin{frame}{Security and Stability Design}
   \begin{itemize}
     \item Passwords are stored with \textbf{Argon2id}, never in plaintext.
+    \item Sensitive database fields and stored secrets are encrypted at rest.
     \item Post-login requests use:
     \begin{itemize}
       \item session token
@@ -143,6 +150,8 @@
     \end{itemize}
     \item Send/upload abuse control with rate limits
     \item Relay authentication between the two domains
+    \item ECC-based end-to-end encryption for text messages
+    \item Local-only smart-module policy to reduce data leakage risk
     \item Recall verification to prevent incorrect recall execution
   \end{itemize}
 \end{frame}
@@ -186,16 +195,114 @@
 
 \begin{frame}{Attachment and Storage Safety}
   \begin{itemize}
-    \item Only image attachments are allowed:
-    \begin{itemize}
-      \item PNG
-      \item JPG / JPEG
-    \end{itemize}
+    \item All attachment file types are accepted for normal mail workflows.
     \item Validation uses magic bytes, not only file extension.
+    \item Image AI review and image transforms run only for image attachments.
     \item Files are stored with generated blob paths, not user-controlled paths.
     \item Blob storage uses SHA-256-based deduplication.
+    \item Compressed copies can replace draft-linked originals without breaking immutable mail history.
     \item Attachment access is protected by mailbox ownership checks.
   \end{itemize}
+\end{frame}
+
+\begin{frame}{Live Frontend Overview}
+  \begin{center}
+    \includegraphics[height=0.72\textheight,keepaspectratio]{01_main_console_real.png}
+  \end{center}
+  \vspace{0.4em}
+  \small The browser frontend now combines login, AI drafting, saved groups, saved attachments, and the main compose workflow in one place.
+\end{frame}
+
+\begin{frame}{Delivery And Attachment Evidence}
+  \begin{columns}[T]
+    \column{0.49\textwidth}
+    \includegraphics[width=\textwidth,height=0.50\textheight,keepaspectratio]{02_cross_domain_delivery_real.png}
+
+    \vspace{0.3em}
+    \scriptsize Cross-domain delivery from \texttt{a.test} to \texttt{b.test}.
+
+    \column{0.49\textwidth}
+    \includegraphics[width=\textwidth,height=0.50\textheight,keepaspectratio]{08_attachment_send_receive_real.png}
+
+    \vspace{0.3em}
+    \scriptsize Receiver-side attachment preview opened from the real inbox.
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Security Lab: Threat Cases}
+  \begin{columns}[T]
+    \column{0.56\textwidth}
+    \includegraphics[width=\textwidth,height=0.66\textheight,keepaspectratio]{09_security_lab_scenarios_top_crop.png}
+
+    \vspace{0.2em}
+    \scriptsize Zoomed evidence from the live security-lab scenario area.
+
+    \column{0.42\textwidth}
+    \scriptsize
+    \begin{itemize}
+      \item \textbf{Brute-force login}: attacker repeatedly guesses one mailbox password.
+      \item \textbf{Replay attack}: attacker resends one previously valid signed request.
+      \item \textbf{Mail flood}: attacker sends bursts to overload recipients or queues.
+      \item \textbf{Phishing detection}: attacker sends urgent credential-reset style mail.
+      \item \textbf{Malicious attachment}: attacker disguises unsafe bytes as an image.
+    \end{itemize}
+    \vspace{0.4em}
+    \scriptsize The lab executes these drills through the real endpoints, so the cases match the actual threat surface of the email system.
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Security Lab: System Reactions}
+  \begin{columns}[T]
+    \column{0.56\textwidth}
+    \includegraphics[width=\textwidth,height=0.66\textheight,keepaspectratio]{09_security_lab_scenarios_bottom_crop.png}
+
+    \vspace{0.2em}
+    \scriptsize Second zoomed section of the same lab page, showing more scenario evidence and follow-up recommendations.
+
+    \column{0.42\textwidth}
+    \scriptsize
+    \begin{itemize}
+      \item Brute-force login: the account is temporarily locked and the attacker is slowed by \texttt{Retry-After}.
+      \item Replay attack: copied requests are rejected by nonce tracking, sequence checks, and MAC verification.
+      \item Mail flood: burst sending is throttled after the safe configured limit.
+      \item Phishing mail: the inbox labels risky content as suspicious instead of showing it as normal mail.
+      \item Malicious attachment: fake image bytes cannot enter the image-only analysis and transform path.
+    \end{itemize}
+    \vspace{0.3em}
+    \scriptsize Each scenario card also records attacker goal, attack path, defender controls, observed evidence, and residual risk.
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Abuse Protection Evidence}
+  \begin{columns}[T]
+    \column{0.49\textwidth}
+    \includegraphics[width=\textwidth,height=0.50\textheight,keepaspectratio]{04_bruteforce_lockout_real.png}
+
+    \vspace{0.3em}
+    \scriptsize Brute-force login protection with temporary lockout.
+
+    \column{0.49\textwidth}
+    \includegraphics[width=\textwidth,height=0.50\textheight,keepaspectratio]{05_send_rate_limit_real.png}
+
+    \vspace{0.3em}
+    \scriptsize High-frequency send attempts blocked in the frontend.
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Concurrency And Storage Evidence}
+  \begin{columns}[T]
+    \column{0.49\textwidth}
+    \includegraphics[width=\textwidth,height=0.50\textheight,keepaspectratio]{03_concurrency_stability_real.png}
+
+    \vspace{0.3em}
+    \scriptsize Burst delivery from many senders into one inbox.
+
+    \column{0.49\textwidth}
+    \includegraphics[width=\textwidth,height=0.50\textheight,keepaspectratio]{11_storage_dedup_backend_web.png}
+
+    \vspace{0.3em}
+    \scriptsize Browser-rendered backend evidence for deduplicated blob storage.
+  \end{columns}
 \end{frame}
 
 \begin{frame}{Testing and Acceptance Coverage}
@@ -228,16 +335,17 @@
   \begin{itemize}
     \item Automated regression suite:
     \begin{itemize}
-      \item \texttt{7 passed, 1 warning in 4.38s}
+      \item \texttt{45 passed, 1 warning}
     \end{itemize}
     \item Verified scenarios include:
     \begin{itemize}
       \item queued cross-domain send
       \item CC delivery across domains
       \item login lockout
-      \item invalid attachment rejection
+      \item rate limiting and phishing detection
+      \item attachment compression, preview, and dedup behavior
       \item recall behavior
-      \item web UI serving
+      \item web UI serving and security-lab rendering
     \end{itemize}
     \item Manual stress run completed:
     \begin{itemize}
@@ -255,6 +363,7 @@
     \item Threat model and protection explanation
     \item Test scripts and test report
     \item Browser frontend for direct demonstration
+    \item Real frontend screenshot pack and presentation PDF for mobile review
   \end{itemize}
 \end{frame}
 

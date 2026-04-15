@@ -13,7 +13,7 @@ The result is a local secure mail system that is meant to feel like a small real
 
 This is not a production SMTP/IMAP server and it does not use a full mailserver like Postfix or Dovecot as the core implementation.
 
-Instead, the project builds its own small mail protocol over HTTPS/JSON while staying conceptually aligned with:
+Instead, the project builds its own small mail protocol over HTTP/JSON for local demos, with optional TLS support for HTTPS deployments, while staying conceptually aligned with:
 
 - SMTP transport ideas from RFC 5321
 - mail/message structure from RFC 5322
@@ -210,7 +210,7 @@ This is the multithreaded / concurrent systems idea the README was emphasizing.
 
 ### Client -> Server
 
-Transport is HTTPS.
+The shipped demo configuration uses loopback HTTP on `127.0.0.1`. The same server entry point also supports optional TLS certificates, so the protocol can run over HTTPS when configured.
 
 After login, the system uses a session plus authenticated request metadata. The combined design target is:
 
@@ -225,7 +225,7 @@ After login, the system uses a session plus authenticated request metadata. The 
 
 This gives us layered protection:
 
-- TLS protects the channel
+- optional TLS protects the channel when enabled
 - session state proves authenticated context
 - per-request MAC protects the action and helps detect tampering or replay
 
@@ -256,7 +256,7 @@ This helps prevent open-relay behavior, forged delivery, duplicate delivery, and
 ### Session Security
 
 - session tokens are cryptographically random
-- all session traffic stays on HTTPS
+- local demo traffic runs on loopback HTTP by default; deployments should enable HTTPS/TLS
 - sessions expire and refresh on valid activity
 - logout / revocation can be added as a follow-up if not in the first MVP cut
 
@@ -280,13 +280,13 @@ This is especially useful for security-sensitive actions like:
 
 This was a key point in the earlier README and should remain explicit:
 
-- TLS protects the transport channel
+- when TLS is enabled, TLS protects the transport channel
 - session state proves authenticated context
 - HMAC protects the individual authenticated action
 
 In short:
 
-> TLS protects the channel, HMAC protects the action.
+> When enabled, TLS protects the channel, and HMAC protects the action.
 
 ### Abuse Prevention
 
@@ -297,14 +297,16 @@ In short:
 
 ### Attachments
 
-Attachments are image-only for the MVP:
+Attachments are a major trust boundary in this project:
 
-- allowlist: `.png`, `.jpg`, `.jpeg`
-- validate magic bytes, not just filename
-- maximum size limit
-- safe generated storage names
-- access control through mailbox ownership
-- physical deduplication by content hash
+- all file types can be stored and relayed through normal mailbox flows
+- upload size and upload rate limits reduce storage and availability abuse
+- filenames do not control storage paths
+- image preview, image AI review, and image transforms are only enabled for verified image bytes
+- generic files can still be attached and downloaded, but they do not enter image-only analysis paths
+- attachment access is protected through mailbox ownership or mailbox-link checks
+- physical blobs are deduplicated by content hash
+- compressed-copy replacement is limited to user-owned editable drafts so immutable mail history is preserved
 
 ### Phishing / Suspicious Mail
 
@@ -339,237 +341,65 @@ Security-relevant events should be logged:
 
 Logs should avoid storing secrets or plaintext passwords.
 
+## Layered Threat Model Summary
+
+This system does not assume one generic "hacker". It models attackers against multiple trust boundaries:
+
+- client <-> server
+- server A <-> server B
+- user <-> stored mailbox data
+- authenticated request layer <-> background workers
+- smart / LLM features <-> sensitive mailbox content
+
+That means the design must protect confidentiality, integrity, availability, and correct authorization across several components, not only the login page.
+
+### Attacker Classes By Trust Level
+
+- `External anonymous internet attacker`: probes public endpoints, brute-forces login, abuses registration, uploads malformed input, or tries denial-of-service.
+- `Authenticated malicious user`: has a valid mailbox account and abuses drafts, recall, groups, attachments, IDs, sequencing, or smart features from inside the application.
+- `Insider / operator attacker`: has database, log, backup, or admin access and tries to read or tamper with stored mail, tokens, or relay configuration.
+- `Compromised client attacker`: steals passwords, session material, drafts, or plaintext from the user device before or after transport protection.
+- `Compromised peer server`: a malicious or compromised remote domain abuses inter-server delivery, relay trust, retry logic, or sender identity assumptions.
+
+### Attacker Capabilities
+
+- `Passive observer`: listens to client-server or server-server traffic and learns credentials, metadata, or message content if transport security fails.
+- `Active network attacker`: modifies or replays traffic, tampers with bodies or headers, and tries to desynchronize state.
+- `Credential attacker`: focuses on password guessing, stuffing, phishing, and session theft.
+- `Content attacker`: sends malicious text to trick users or poison smart suggestions.
+- `Attachment attacker`: uploads oversized files, fake images, parser bombs, or dangerous filenames.
+- `Storage attacker`: targets databases, blobs, queues, backups, and logs.
+- `Availability / race attacker`: floods send paths, workers, storage, or concurrent state transitions.
+- `AI prompt attacker`: uses malicious email content to manipulate summarization, quick replies, or model context.
+
+### Highest-Priority Attackers For This Repo
+
+1. `Authenticated malicious user`
+2. `Active network / replay attacker`
+3. `Compromised peer server`
+4. `Insider with storage or log access`
+5. `Attachment attacker`
+6. `AI prompt-injection attacker`
+7. `Availability and race attacker`
+
+These are the most realistic attackers for this feature set because the system includes drafts, groups, recall, attachments, inter-domain relay, queue-backed processing, and smart/LLM assistance.
+
 ## Threats Explicitly Considered
 
-The earlier README was intentionally fine-tuned around security review thinking. The merged version should keep that depth.
-
-This project explicitly considers:
-
-- brute-force login
-- replay attacks
-- duplicate request retry
-- forged recall
-- tampered authenticated requests
-- spam / mass-send abuse
-- phishing and suspicious mail
-- attachment access bypass
-- open-relay abuse
-- storage isolation failure between domains
-- concurrency-induced inconsistent states
-- prompt injection against smart features
-- privacy leaks through logs, context sharing, or attachments
-- secret/configuration mistakes
-
-## Expanded Security Concerns
-
-### Authentication And Session Risks
-
-Relevant concerns include:
-
-- weak password storage
-- plaintext password logging
-- predictable or long-lived session secrets
-- session theft or reuse
-- missing expiration or revocation behavior
-- user enumeration through different auth errors
-
-Expected mitigations:
-
-- Argon2id password hashing
-- HTTPS-only transport
-- short-lived session state with rotation/refresh policy
-- generic auth failures where useful
-- rate limiting and lockout
-
-### Authorization And Resource Ownership
-
-Authentication alone is not enough. We also need strict ownership checks for:
-
-- inbox access
-- sent/draft access
-- attachment download
-- recall requests
-- quick actions
-- group operations
-
-This is where insecure direct object reference risks show up, especially with predictable message IDs or attachment IDs.
-
-### Transport And Relay Risks
-
-Client-to-server and server-to-server traffic are both security-sensitive.
-
-Relevant concerns include:
-
-- credential theft in transit
-- man-in-the-middle attacks
-- forged relay requests
-- replayed relay delivery
-- routing mail to the wrong endpoint
-- open-relay behavior
-- accepting mail for domains a server does not own
-
-Expected mitigations:
-
-- HTTPS/TLS
-- authenticated relay endpoints
-- timestamp / nonce / replay controls
-- strict recipient-domain ownership checks
-- logging of relay decisions
-
-### Storage Isolation Risks
-
-Storage isolation is a security property, not just an implementation detail.
-
-Relevant concerns include:
-
-- one domain reading another domain's mailbox state
-- shared attachment namespaces without access control
-- mixed logs or exports
-- cross-domain leakage through admin tooling or debug helpers
-
-Expected mitigations:
-
-- per-domain storage roots
-- domain-scoped queries
-- separate attachment namespaces or identifiers
-- careful administrative boundaries
-
-### Attachment Handling Risks
-
-Attachments remain a major attack surface.
-
-Relevant concerns include:
-
-- arbitrary upload
-- oversized file DoS
-- path traversal through filenames
-- content-type spoofing
-- unauthorized download
-- dangerous response handling
-
-Expected mitigations:
-
-- size limits
-- filename independence from user input
-- magic-byte validation
-- ownership checks on download
-- safe content-disposition and content-type handling
-
-### Input Validation And Business Logic Risks
-
-Not all vulnerabilities are cryptographic. Many are logic errors.
-
-Relevant concerns include:
-
-- malformed email identities
-- invalid recipient lists
-- oversized body/subject fields
-- forged or stale recall requests
-- duplicate delivery during retries
-- partial cross-domain failures
-- inconsistent recall semantics across domains
-
-Expected mitigations:
-
-- strict schema validation
-- explicit state transitions
-- idempotent processing where possible
-- careful negative tests for edge cases
-
-### Logging, Privacy, And Data Minimization
-
-Security logging helps with defense, but logs can become a leak.
-
-Relevant concerns include:
-
-- logging secrets or passwords
-- logging excessive message content
-- leaking tokens into logs
-- unbounded log growth
-- retention of recalled or sensitive content longer than intended
-
-Expected mitigations:
-
-- structured audit logs
-- redaction / minimization
-- bounded retention
-- logging security-relevant events without dumping secrets
-
-### Smart Feature And Prompt Injection Risks
-
-The previous README was right to call this out in detail: email content is attacker-controlled text.
-
-Relevant concerns include:
-
-- prompt injection from malicious messages
-- over-sharing mailbox history to smart components
-- treating model output as authoritative
-- wrong-thread quick reply context
-- privacy loss when sending user content to external AI providers
-
-Expected mitigations:
-
-- advisory-only smart features
-- minimal-context design
-- no autonomous privileged actions
-- output filtering and validation
-- keeping smart systems outside privileged execution paths
-
-### Replay, Duplication, And Concurrency Risks
-
-Distributed delivery and concurrent clients create their own security problems.
-
-Relevant concerns include:
-
-- reusing an old signed request
-- accepting duplicate relay jobs
-- sequence confusion in one session
-- send/recall races
-- inconsistent sent/inbox state under concurrent load
-
-Expected mitigations:
-
-- request IDs
-- nonces
-- timestamps
-- sequence tracking
-- duplicate detection
-- idempotent receiver handling
-
-### Configuration And Secret Management Risks
-
-Security often fails at the configuration layer.
-
-Relevant concerns include:
-
-- hard-coded secrets
-- committed credentials
-- insecure defaults
-- wrong peer-domain mappings
-- debug mode or weak TLS settings in the wrong environment
-
-Expected mitigations:
-
-- environment-based secret management
-- config validation
-- safe defaults
-- explicit local-dev versus secure-demo documentation
-
-### Testing And Verification Risks
-
-A system is not meaningfully secure if only happy paths are tested.
-
-Security testing should cover:
-
-- forged relay requests
-- tampered request MACs
-- replayed requests
-- unauthorized attachment access
-- duplicate delivery
-- malformed smart-feature inputs
-- isolation failures between domains
-
-The README and the future `docs/threat_model.md` should stay aligned on these points.
+This repo explicitly designs for or tests:
+
+- brute-force login, credential stuffing pressure, and session theft
+- replay, reordering, and tampering of authenticated state-changing requests
+- malicious authenticated-user abuse of groups, drafts, recall, attachments, and message identifiers
+- insider or storage-operator access to mailbox data, logs, queued jobs, and secrets
+- rogue or compromised peer-domain servers in cross-domain delivery
+- phishing content, social engineering, and prompt injection against smart features
+- malicious attachments, fake-image uploads, oversized files, and storage exhaustion
+- availability pressure, queue exhaustion, concurrency bugs, and send/recall races
+- privacy leaks through logs, context sharing, or overly broad smart-module prompts
+- configuration and secret-management mistakes that weaken otherwise correct code
+
+See `docs/threat_model.md` for the full attacker -> goal -> entry point -> concrete attack -> defense mapping.
 
 ## Mail Lifecycle
 
@@ -633,6 +463,34 @@ It may not:
 - mutate account state without explicit server-side validation
 
 This keeps smart functionality useful without turning it into a trusted authority.
+
+## LLM Risk Must Be Explicit
+
+The smart module is not just a feature. It is its own threat surface.
+
+Incoming email is attacker-controlled input, so any summarization, smart review, drafting, quick reply, or image-analysis request must be treated as if it is processing hostile content. The main LLM-specific risks in this system are:
+
+- prompt injection inside email subject, body, attachment OCR, or extracted metadata
+- cross-message or cross-user context leakage
+- accidental disclosure of secrets, tokens, or previous mailbox content through model prompts or outputs
+- unsafe action suggestions that pressure the user into sending, recalling, or trusting the wrong content
+- privacy leakage to model backends, logs, traces, or cached prompt history
+- availability abuse through repeated expensive model calls
+- model or dependency compromise in the smart-analysis pipeline
+
+The current design response is:
+
+- keep smart features advisory only
+- never allow the model to execute privileged actions directly
+- validate every state-changing action again on the server
+- bound model context to the current task instead of giving the model broad mailbox access
+- prefer local-only smart backends for sensitive analysis
+- avoid storing raw secrets in prompts, logs, or database fields
+- isolate image-only AI paths from generic file attachments
+
+In short:
+
+> The LLM is treated as an untrusted assistant, not as a security boundary.
 
 ## Repository Direction
 
@@ -834,6 +692,8 @@ scripts/
   stress_test.py --mode many_users --users 100 --mails 1
   stress_test.py --mode one_user --users 1 --mails 100
 ```
+
+A saved local run of these two assignment-sized stress scenarios is included in `docs/stress_test_results.md`.
 
 ## References Behind The Design
 

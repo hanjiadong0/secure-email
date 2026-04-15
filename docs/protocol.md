@@ -2,12 +2,14 @@
 
 ## Overview
 
-The system uses a local HTTPS/JSON-style protocol for:
+The system uses a local HTTP/JSON-style protocol for:
 
 - client -> server authentication and mailbox operations
 - server -> server relay delivery and recall
 
 The implementation stays conceptually aligned with RFC 5321 / RFC 5322 / MIME ideas without implementing full SMTP/IMAP.
+
+The packaged demo configs run on loopback HTTP (`http://127.0.0.1:8443` and `http://127.0.0.1:9443`) for easy local startup. The same server supports optional TLS by supplying `--ssl-certfile` and `--ssl-keyfile` or by setting TLS paths in the domain config.
 
 ## Auth Flow
 

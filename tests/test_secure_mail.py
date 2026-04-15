@@ -195,6 +195,208 @@ def test_web_root_is_served(app_pair):
     assert script.status_code == 200
     assert "signedPost" in script.text
 
+    security_lab = client_a.get("/security-lab")
+    assert security_lab.status_code == 200
+    assert "Security Lab" in security_lab.text
+
+    security_script = client_a.get("/static/security-lab.js")
+    assert security_script.status_code == 200
+    assert "runSimulation" in security_script.text
+
+
+def test_health_and_smart_status_report_local_llm_ready(app_pair, monkeypatch):
+    client_a, _ = app_pair
+    client_a.app.state.ctx.config.smart_backend = "ollama"
+    client_a.app.state.ctx.config.ollama_model = "llama3.2:latest"
+
+    def fake_probe_ollama_status(config: DomainConfig) -> dict[str, object]:
+        assert config.ollama_model == "llama3.2:latest"
+        return {
+            "configured_backend": "ollama",
+            "effective_backend": "ollama",
+            "status": "ready",
+            "available": True,
+            "local_only": True,
+            "configured_model": "llama3.2:latest",
+            "endpoint": "http://127.0.0.1:11434",
+            "detail": "Local Ollama is reachable and ready with model 'llama3.2:latest'.",
+        }
+
+    monkeypatch.setattr(smart_module, "_probe_ollama_status", fake_probe_ollama_status)
+
+    health = client_a.get("/health")
+    assert health.status_code == 200
+    smart_health = health.json()["smart"]
+    assert smart_health["effective_backend"] == "ollama"
+    assert smart_health["available"] is True
+
+    smart_status = client_a.get("/v1/smart/status")
+    assert smart_status.status_code == 200
+    payload = smart_status.json()
+    assert payload["configured_backend"] == "ollama"
+    assert payload["configured_model"] == "llama3.2:latest"
+    assert payload["status"] == "ready"
+
+
+def test_smart_status_reports_fallback_when_local_llm_is_blocked(app_pair):
+    client_a, _ = app_pair
+    client_a.app.state.ctx.config.smart_backend = "ollama"
+    client_a.app.state.ctx.config.ollama_model = "mock-remote"
+    client_a.app.state.ctx.config.ollama_base_url = "http://example.invalid:11434"
+
+    response = client_a.get("/v1/smart/status")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["configured_backend"] == "ollama"
+    assert payload["effective_backend"] == "heuristic_fallback"
+    assert payload["available"] is False
+    assert "smart_local_only" in payload["detail"]
+
+
+def test_compose_assist_generates_draft_with_ollama(app_pair, monkeypatch):
+    client_a, _ = app_pair
+    _register(client_a, "alice@a.test")
+    alice = _login(client_a, "alice@a.test")
+    client_a.app.state.ctx.config.smart_backend = "ollama"
+    client_a.app.state.ctx.config.ollama_model = "mock-local"
+
+    def fake_generate_json(config, model: str, prompt: str) -> dict:
+        assert model == "mock-local"
+        assert "Write a strong first draft email." in prompt
+        return {
+            "subject": "Project timeline follow-up",
+            "body_text": "Hello Bob,\n\nI wanted to follow up on the project timeline and ask whether the latest milestone still looks achievable this week.\n\nBest regards,",
+        }
+
+    monkeypatch.setattr(smart_module, "_ollama_generate_json", fake_generate_json)
+
+    body = {
+        "action": "draft",
+        "instruction": "Write a polite follow-up about the project timeline.",
+        "to": ["bob@b.test"],
+        "cc": [],
+        "subject": "",
+        "body_text": "",
+    }
+    response = client_a.post("/v1/smart/compose", json=body, headers=_signed_headers(alice, "/v1/smart/compose", body))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["smart_backend"] == "ollama"
+    assert payload["used_fallback"] is False
+    assert payload["language"] == "English"
+    assert payload["context_used"] is False
+    assert payload["subject"] == "Project timeline follow-up"
+    assert "follow up on the project timeline" in payload["body_text"]
+
+
+def test_compose_assist_uses_reply_context_and_detects_german(app_pair, monkeypatch):
+    client_a, client_b = app_pair
+    _register(client_a, "alice@a.test")
+    _register(client_b, "bob@b.test")
+    alice = _login(client_a, "alice@a.test")
+    bob = _login(client_b, "bob@b.test")
+    client_a.app.state.ctx.config.smart_backend = "ollama"
+    client_a.app.state.ctx.config.ollama_model = "mock-local"
+
+    send_body = {
+        "to": ["alice@a.test"],
+        "cc": [],
+        "subject": "Projektstatus",
+        "body_text": "Hallo Alice,\n\nkönnen wir morgen kurz über den Projektstatus sprechen?\n\nViele Grüße,",
+        "attachment_ids": [],
+        "thread_id": None,
+    }
+    send = client_b.post("/v1/mail/send", json=send_body, headers=_signed_headers(bob, "/v1/mail/send", send_body))
+    assert send.status_code == 200
+    message_id = send.json()["message_id"]
+    _wait_for_message(client_b, message_id)
+    _wait_for_message(client_a, message_id)
+
+    inbox = client_a.get("/v1/mail/inbox", headers={"Authorization": f"Bearer {alice['session_token']}"})
+    assert inbox.status_code == 200
+    context_message = next(item for item in inbox.json() if item["message_id"] == message_id)
+
+    def fake_generate_json(config, model: str, prompt: str) -> dict:
+        assert model == "mock-local"
+        assert "Write the final email in German." in prompt
+        assert "Selected message context for reply/thread continuity:" in prompt
+        assert "Context subject: Projektstatus" in prompt
+        return {
+            "subject": "Re: Projektstatus",
+            "body_text": "Hallo Bob,\n\nvielen Dank für deine Nachricht. Morgen passt für mich gut.\n\nViele Grüße,",
+        }
+
+    monkeypatch.setattr(smart_module, "_ollama_generate_json", fake_generate_json)
+
+    body = {
+        "action": "draft",
+        "instruction": "Bitte antworte höflich und bestätige den Termin.",
+        "to": ["bob@b.test"],
+        "cc": [],
+        "subject": "Re: Projektstatus",
+        "body_text": "",
+        "thread_id": context_message["thread_id"],
+        "context_message_id": context_message["message_id"],
+    }
+    response = client_a.post("/v1/smart/compose", json=body, headers=_signed_headers(alice, "/v1/smart/compose", body))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["smart_backend"] == "ollama"
+    assert payload["language"] == "German"
+    assert payload["context_used"] is True
+    assert payload["subject"] == "Re: Projektstatus"
+    assert "Morgen passt" in payload["body_text"]
+
+
+def test_compose_assist_can_continue_with_fallback_when_llm_is_unavailable(app_pair):
+    client_a, _ = app_pair
+    _register(client_a, "alice@a.test")
+    alice = _login(client_a, "alice@a.test")
+    client_a.app.state.ctx.config.smart_backend = "ollama"
+    client_a.app.state.ctx.config.ollama_model = "mock-remote"
+    client_a.app.state.ctx.config.ollama_base_url = "http://example.invalid:11434"
+
+    body = {
+        "action": "continue",
+        "instruction": "Ask whether Tuesday also works.",
+        "to": ["bob@b.test"],
+        "cc": [],
+        "subject": "Meeting follow-up",
+        "body_text": "Hello Bob,\n\nI wanted to confirm the meeting schedule.",
+    }
+    response = client_a.post("/v1/smart/compose", json=body, headers=_signed_headers(alice, "/v1/smart/compose", body))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["smart_backend"] == "heuristic_fallback"
+    assert payload["used_fallback"] is True
+    assert payload["language"] == "English"
+    assert payload["subject"] == "Meeting follow-up"
+    assert "Tuesday" in payload["body_text"]
+
+
+def test_draft_thread_id_is_preserved(app_pair):
+    client_a, _ = app_pair
+    _register(client_a, "alice@a.test")
+    alice = _login(client_a, "alice@a.test")
+    thread_id = new_id()
+
+    body = {
+        "message_id": None,
+        "to": ["bob@b.test"],
+        "cc": [],
+        "subject": "Re: Project timeline",
+        "body_text": "Hello Bob,\n\nHere is a saved reply draft.",
+        "attachment_ids": [],
+        "thread_id": thread_id,
+        "send_now": False,
+    }
+    saved = client_a.post("/v1/mail/draft", json=body, headers=_signed_headers(alice, "/v1/mail/draft", body))
+    assert saved.status_code == 200
+
+    drafts = client_a.get("/v1/mail/drafts", headers={"Authorization": f"Bearer {alice['session_token']}"})
+    assert drafts.status_code == 200
+    assert drafts.json()[0]["thread_id"] == thread_id
+
 
 def test_dashboard_snapshot_route(app_pair):
     client_a, client_b = app_pair
@@ -279,6 +481,24 @@ def test_cross_domain_send_attachment_recall_and_tamper(app_pair):
 
     inbox_after = client_b.get("/v1/mail/inbox", headers={"Authorization": f"Bearer {bob['session_token']}"})
     assert inbox_after.json()[0]["recalled"] is True
+
+
+def test_send_rejects_invalid_recipient_address(app_pair):
+    client_a, _ = app_pair
+    _register(client_a, "alice@a.test")
+    alice = _login(client_a, "alice@a.test")
+
+    send_body = {
+        "to": ["not-an-email"],
+        "cc": [],
+        "subject": "Broken",
+        "body_text": "This should fail cleanly.",
+        "attachment_ids": [],
+        "thread_id": None,
+    }
+    send = client_a.post("/v1/mail/send", json=send_body, headers=_signed_headers(alice, "/v1/mail/send", send_body))
+    assert send.status_code == 400
+    assert "invalid email address" in send.json()["detail"].lower()
 
 
 def test_quick_actions_calendar_and_phishing_report(app_pair):
@@ -451,6 +671,245 @@ def test_attachment_dedup_reuses_single_blob(app_pair):
     assert len(blobs) == 1
     assert blobs[0]["ref_count"] == 2
     assert attachments["total"] == 2
+
+
+def test_saved_attachment_library_lists_and_deletes_unused_uploads(app_pair):
+    client_a, _ = app_pair
+    _register(client_a, "alice@a.test")
+    alice = _login(client_a, "alice@a.test")
+
+    upload_body = {
+        "filename": "pixel.png",
+        "content_base64": base64.b64encode(PNG_BYTES).decode("ascii"),
+    }
+    upload = client_a.post("/v1/attachments/upload", json=upload_body, headers=_signed_headers(alice, "/v1/attachments/upload", upload_body))
+    assert upload.status_code == 200
+    attachment_id = upload.json()["id"]
+
+    library = client_a.get("/v1/attachments", headers={"Authorization": f"Bearer {alice['session_token']}"})
+    assert library.status_code == 200
+    entry = next(item for item in library.json() if item["id"] == attachment_id)
+    assert entry["filename"] == "pixel.png"
+    assert entry["deletable"] is True
+    assert entry["linked_folders"] == []
+
+    delete_body = {}
+    deleted = client_a.post(
+        f"/v1/attachments/{attachment_id}/delete",
+        json=delete_body,
+        headers=_signed_headers(alice, f"/v1/attachments/{attachment_id}/delete", delete_body),
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["status"] == "deleted"
+
+    library_after = client_a.get("/v1/attachments", headers={"Authorization": f"Bearer {alice['session_token']}"})
+    assert library_after.status_code == 200
+    assert all(item["id"] != attachment_id for item in library_after.json())
+
+    with client_a.app.state.ctx.connect() as conn:
+        attachments_total = conn.execute("SELECT COUNT(*) AS total FROM attachments").fetchone()
+        blobs_total = conn.execute("SELECT COUNT(*) AS total FROM attachment_blobs").fetchone()
+    assert attachments_total["total"] == 0
+    assert blobs_total["total"] == 0
+
+
+def test_saved_attachment_library_blocks_deleting_mail_linked_file(app_pair):
+    client_a, client_b = app_pair
+    _register(client_a, "alice@a.test")
+    _register(client_b, "bob@b.test")
+    alice = _login(client_a, "alice@a.test")
+    _login(client_b, "bob@b.test")
+
+    upload_body = {
+        "filename": "pixel.png",
+        "content_base64": base64.b64encode(PNG_BYTES).decode("ascii"),
+    }
+    upload = client_a.post("/v1/attachments/upload", json=upload_body, headers=_signed_headers(alice, "/v1/attachments/upload", upload_body))
+    assert upload.status_code == 200
+    attachment_id = upload.json()["id"]
+
+    send_body = {
+        "to": ["bob@b.test"],
+        "cc": [],
+        "subject": "Attachment in history",
+        "body_text": "This mail should lock the saved file from deletion.",
+        "attachment_ids": [attachment_id],
+        "thread_id": None,
+    }
+    send = client_a.post("/v1/mail/send", json=send_body, headers=_signed_headers(alice, "/v1/mail/send", send_body))
+    assert send.status_code == 200
+    message_id = send.json()["message_id"]
+    _wait_for_message(client_a, message_id)
+    _wait_for_message(client_b, message_id)
+
+    library = client_a.get("/v1/attachments", headers={"Authorization": f"Bearer {alice['session_token']}"})
+    assert library.status_code == 200
+    entry = next(item for item in library.json() if item["id"] == attachment_id)
+    assert entry["deletable"] is False
+    assert "sent" in entry["linked_folders"]
+
+    delete_body = {}
+    deleted = client_a.post(
+        f"/v1/attachments/{attachment_id}/delete",
+        json=delete_body,
+        headers=_signed_headers(alice, f"/v1/attachments/{attachment_id}/delete", delete_body),
+    )
+    assert deleted.status_code == 400
+    assert "mail history" in deleted.json()["detail"].lower()
+
+
+def test_attachment_compress_creates_smaller_saved_copy(app_pair):
+    client_a, _ = app_pair
+    _register(client_a, "alice@a.test")
+    alice = _login(client_a, "alice@a.test")
+
+    original_bytes = (b"Quarterly secure email report.\n" * 120)
+    upload_body = {
+        "filename": "report.txt",
+        "content_base64": base64.b64encode(original_bytes).decode("ascii"),
+    }
+    upload = client_a.post("/v1/attachments/upload", json=upload_body, headers=_signed_headers(alice, "/v1/attachments/upload", upload_body))
+    assert upload.status_code == 200
+    source_attachment_id = upload.json()["id"]
+
+    compress_body = {}
+    compressed = client_a.post(
+        f"/v1/attachments/{source_attachment_id}/compress",
+        json=compress_body,
+        headers=_signed_headers(alice, f"/v1/attachments/{source_attachment_id}/compress", compress_body),
+    )
+    assert compressed.status_code == 200
+    payload = compressed.json()
+    assert payload["id"] != source_attachment_id
+    assert payload["filename"] == "report.txt.zip"
+    assert payload["content_type"] == "application/zip"
+    assert payload["analysis"]["source_transform"] == "compress"
+    assert payload["analysis"]["compression"]["original_size_bytes"] == len(original_bytes)
+    assert payload["analysis"]["compression"]["compressed_size_bytes"] < len(original_bytes)
+    assert payload["analysis"]["compression"]["saved_bytes"] > 0
+
+    library = client_a.get("/v1/attachments", headers={"Authorization": f"Bearer {alice['session_token']}"})
+    assert library.status_code == 200
+    listed_ids = {item["id"] for item in library.json()}
+    assert source_attachment_id in listed_ids
+    assert payload["id"] in listed_ids
+
+
+def test_attachment_compress_replaces_owned_draft_reference_so_original_can_be_deleted(app_pair):
+    client_a, _ = app_pair
+    _register(client_a, "alice@a.test")
+    alice = _login(client_a, "alice@a.test")
+
+    original_bytes = (b"draft attachment payload\n" * 100)
+    upload_body = {
+        "filename": "draft-notes.txt",
+        "content_base64": base64.b64encode(original_bytes).decode("ascii"),
+    }
+    upload = client_a.post("/v1/attachments/upload", json=upload_body, headers=_signed_headers(alice, "/v1/attachments/upload", upload_body))
+    assert upload.status_code == 200
+    source_attachment_id = upload.json()["id"]
+
+    draft_body = {
+        "message_id": None,
+        "to": ["bob@b.test"],
+        "cc": [],
+        "subject": "Editable draft",
+        "body_text": "Please review the compressed version before I send this.",
+        "attachment_ids": [source_attachment_id],
+        "thread_id": None,
+        "send_now": False,
+    }
+    saved = client_a.post("/v1/mail/draft", json=draft_body, headers=_signed_headers(alice, "/v1/mail/draft", draft_body))
+    assert saved.status_code == 200
+    draft_message_id = saved.json()["message_id"]
+
+    compress_body = {}
+    compressed = client_a.post(
+        f"/v1/attachments/{source_attachment_id}/compress",
+        json=compress_body,
+        headers=_signed_headers(alice, f"/v1/attachments/{source_attachment_id}/compress", compress_body),
+    )
+    assert compressed.status_code == 200
+    compressed_payload = compressed.json()
+    assert compressed_payload["analysis"]["source_transform"] == "compress"
+    assert compressed_payload["analysis"]["draft_replacements"] == 1
+
+    drafts = client_a.get("/v1/mail/drafts", headers={"Authorization": f"Bearer {alice['session_token']}"})
+    assert drafts.status_code == 200
+    draft = next(item for item in drafts.json() if item["message_id"] == draft_message_id)
+    draft_attachment_ids = [item["id"] for item in draft["attachments"]]
+    assert source_attachment_id not in draft_attachment_ids
+    assert compressed_payload["id"] in draft_attachment_ids
+
+    library = client_a.get("/v1/attachments", headers={"Authorization": f"Bearer {alice['session_token']}"})
+    assert library.status_code == 200
+    original_entry = next(item for item in library.json() if item["id"] == source_attachment_id)
+    assert original_entry["deletable"] is True
+
+    delete_body = {}
+    deleted = client_a.post(
+        f"/v1/attachments/{source_attachment_id}/delete",
+        json=delete_body,
+        headers=_signed_headers(alice, f"/v1/attachments/{source_attachment_id}/delete", delete_body),
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["status"] == "deleted"
+
+    library_after = client_a.get("/v1/attachments", headers={"Authorization": f"Bearer {alice['session_token']}"})
+    assert library_after.status_code == 200
+    listed_ids = {item["id"] for item in library_after.json()}
+    assert source_attachment_id not in listed_ids
+    assert compressed_payload["id"] in listed_ids
+
+
+def test_recipient_can_compress_attachment_from_inbox(app_pair):
+    client_a, client_b = app_pair
+    _register(client_a, "alice@a.test")
+    _register(client_b, "bob@b.test")
+    alice = _login(client_a, "alice@a.test")
+    bob = _login(client_b, "bob@b.test")
+
+    original_bytes = (b"security evidence packet\n" * 90)
+    upload_body = {
+        "filename": "evidence.txt",
+        "content_base64": base64.b64encode(original_bytes).decode("ascii"),
+    }
+    upload = client_a.post("/v1/attachments/upload", json=upload_body, headers=_signed_headers(alice, "/v1/attachments/upload", upload_body))
+    assert upload.status_code == 200
+    attachment_id = upload.json()["id"]
+
+    send_body = {
+        "to": ["bob@b.test"],
+        "cc": [],
+        "subject": "Evidence package",
+        "body_text": "Please review and archive this attachment.",
+        "attachment_ids": [attachment_id],
+        "thread_id": None,
+    }
+    send = client_a.post("/v1/mail/send", json=send_body, headers=_signed_headers(alice, "/v1/mail/send", send_body))
+    assert send.status_code == 200
+    message_id = send.json()["message_id"]
+    _wait_for_message(client_a, message_id)
+    _wait_for_message(client_b, message_id)
+
+    inbox = client_b.get("/v1/mail/inbox", headers={"Authorization": f"Bearer {bob['session_token']}"})
+    assert inbox.status_code == 200
+    message = next(item for item in inbox.json() if item["message_id"] == message_id)
+    inbox_attachment_id = message["attachments"][0]["id"]
+
+    compress_body = {}
+    compressed = client_b.post(
+        f"/v1/attachments/{inbox_attachment_id}/compress",
+        json=compress_body,
+        headers=_signed_headers(bob, f"/v1/attachments/{inbox_attachment_id}/compress", compress_body),
+    )
+    assert compressed.status_code == 200
+    compressed_payload = compressed.json()
+    assert compressed_payload["analysis"]["source_transform"] == "compress"
+
+    library = client_b.get("/v1/attachments", headers={"Authorization": f"Bearer {bob['session_token']}"})
+    assert library.status_code == 200
+    assert any(item["id"] == compressed_payload["id"] for item in library.json())
 
 
 def test_sensitive_db_fields_are_encrypted_at_rest(app_pair):
@@ -853,6 +1312,30 @@ def test_replay_rejected(app_pair):
     assert replay.status_code == 409
 
 
+def test_groups_can_be_listed_and_updated(app_pair):
+    client_a, _ = app_pair
+    _register(client_a, "alice@a.test")
+    alice = _login(client_a, "alice@a.test")
+
+    first_body = {"name": "project-team", "members": ["bob@b.test", "carol@a.test"]}
+    first = client_a.post("/v1/groups/create", json=first_body, headers=_signed_headers(alice, "/v1/groups/create", first_body))
+    assert first.status_code == 200
+
+    groups = client_a.get("/v1/groups", headers={"Authorization": f"Bearer {alice['session_token']}"})
+    assert groups.status_code == 200
+    assert groups.json()[0]["name"] == "project-team"
+    assert groups.json()[0]["members"] == ["bob@b.test", "carol@a.test"]
+
+    update_body = {"name": "project-team", "members": ["dave@a.test"]}
+    update = client_a.post("/v1/groups/create", json=update_body, headers=_signed_headers(alice, "/v1/groups/create", update_body))
+    assert update.status_code == 200
+
+    dashboard = client_a.get("/v1/mail/dashboard", headers={"Authorization": f"Bearer {alice['session_token']}"})
+    assert dashboard.status_code == 200
+    assert dashboard.json()["groups"][0]["name"] == "project-team"
+    assert dashboard.json()["groups"][0]["members"] == ["dave@a.test"]
+
+
 def test_non_image_attachment_is_allowed_without_image_ai(app_pair):
     client_a, _ = app_pair
     _register(client_a, "alice@a.test")
@@ -892,6 +1375,22 @@ def test_security_simulation_generates_png_evidence(app_pair):
     report = simulate.json()
     assert report["status"] == "ok"
     assert report["metrics"]["total_attempts"] >= 1
+    assert report["overview"]["summary"]
+    assert report["methodology"]
+    assert report["threat_model"]["assets"]
+    assert report["threat_model"]["llm_risks"]
+    assert report["scenarios"][0]["attacker_goal"]
+    assert report["scenarios"][0]["attacker_name"]
+    assert report["scenarios"][0]["attacker_class"]
+    assert report["scenarios"][0]["attacker_script"]
+    assert report["scenarios"][0]["trust_boundary"]
+    assert report["scenarios"][0]["security_objectives"]
+    assert report["scenarios"][0]["entry_points"]
+    assert report["scenarios"][0]["defender_controls"]
+    assert report["scenarios"][0]["explanation"]
+    scenario_ids = {item["scenario_id"] for item in report["scenarios"]}
+    assert "llm_prompt_injection" in scenario_ids
+    assert "rogue_peer_server" in scenario_ids
     assert "attacker_vs_defender" in report["images"]
     assert "scenario_matrix" in report["images"]
 

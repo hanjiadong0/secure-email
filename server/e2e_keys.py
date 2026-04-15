@@ -6,7 +6,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 
 from common.crypto import mac_hex
 from common.schemas import KeyResolveRequest, KeyResolveResponse, PublishKeyRequest, PublishedKey
-from common.utils import email_domain, isoformat_utc, json_dumps, normalize_email, utcnow
+from common.utils import email_domain, is_valid_email, isoformat_utc, json_dumps, normalize_email, utcnow
 from server.auth import get_current_user, verify_authenticated_request
 from server.logging import log_event
 from server.storage import AppContext
@@ -86,6 +86,9 @@ def _lookup_local_keys(ctx: AppContext, emails: list[str]) -> tuple[list[Publish
 
 def resolve_keys(ctx: AppContext, emails: list[str]) -> KeyResolveResponse:
     normalized = [normalize_email(email) for email in emails if normalize_email(email)]
+    invalid = [email for email in normalized if not is_valid_email(email)]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid email address: {', '.join(invalid)}")
     grouped: dict[str, list[str]] = {}
     for email in normalized:
         grouped.setdefault(email_domain(email), []).append(email)
@@ -183,6 +186,9 @@ def register_routes(app: FastAPI, ctx: AppContext) -> None:
             x_relay_mac,
             payload.model_dump(),
         )
+        invalid = [email for email in payload.emails if not is_valid_email(email)]
+        if invalid:
+            raise HTTPException(status_code=400, detail=f"Invalid email address: {', '.join(invalid)}")
         local_only = [email for email in payload.emails if email_domain(email) == ctx.config.domain]
         keys, missing = _lookup_local_keys(ctx, local_only)
         return KeyResolveResponse(keys=keys, missing=missing)

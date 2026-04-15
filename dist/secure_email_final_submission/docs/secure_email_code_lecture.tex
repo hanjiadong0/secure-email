@@ -1,0 +1,2345 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[hidelinks]{hyperref}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.6em}
+\emergencystretch=2em
+\hypersetup{
+  pdftitle={Educational Lecture Notes: Understanding the Smart Secure Email Codebase},
+  pdfauthor={OpenAI Codex},
+  pdfsubject={Educational lecture notes for the smart secure email implementation}
+}
+\title{Educational Lecture Notes: Understanding the Smart Secure Email Codebase}
+\author{Secure Email Project}
+\date{\today}
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+\section{Purpose of This Lecture}
+
+This document is not just a project summary. It is a teaching-oriented code walkthrough for the entire smart secure email system. The goal is that a student, reviewer, teammate, or examiner can read this file and understand:
+
+\begin{itemize}
+\item what the system is supposed to do
+\item how the repository is organized
+\item how the code is divided into modules
+\item how the main runtime flows actually work
+\item where the security mechanisms live in code
+\item how the "smart" features are implemented
+\item how storage, relay, workers, and testing fit together
+\item what was implemented directly and what remains a design extension
+\end{itemize}
+
+This lecture is intentionally broader than \nolinkurl{README.md}. The README gives the project story. This lecture explains the codebase that realizes that story. It also connects the written documents in \nolinkurl{docs/} back to the source files in \nolinkurl{common/}, \nolinkurl{server/}, \nolinkurl{client/}, \nolinkurl{web/}, \nolinkurl{scripts/}, and \nolinkurl{tests/}.
+
+If you only want a quick introduction, start with:
+
+\begin{enumerate}
+\item \nolinkurl{README.md}
+\item \nolinkurl{server/main.py}
+\item \nolinkurl{server/auth.py}
+\item \nolinkurl{server/storage.py}
+\item \nolinkurl{server/mailbox.py}
+\item \nolinkurl{server/relay.py}
+\item \nolinkurl{server/workers.py}
+\item \nolinkurl{web/app.js}
+\item \nolinkurl{tests/test_secure_mail.py}
+\end{enumerate}
+
+If you want to deeply understand the implementation, read this lecture from start to finish.
+
+
+\section{What This Project Builds}
+
+The project implements a local "smart secure email" prototype with two isolated mail domains. It does not rely on a mature mail server such as Postfix, Dovecot, Exim, or Exchange as its core runtime. Instead, it builds a small mail system over HTTP and JSON, with:
+
+\begin{itemize}
+\item two separate domain servers
+\item two separate local storage roots
+\item client registration and login
+\item inbox, sent, and draft folders
+\item cross-domain mail delivery
+\item group send and saved groups
+\item image attachments
+\item recall of unread mail within a limited window
+\item quick reply suggestions
+\item quick actions such as add-TODO and acknowledge
+\item fuzzy search and contact autocomplete
+\item phishing heuristics
+\item rate limiting and login lockout
+\item audit logging and alert logging
+\item a queue-backed worker model
+\item automated tests
+\item a browser frontend and a CLI frontend
+\end{itemize}
+
+This is important because the assignment is not asking for a toy CRUD app. It asks for a usable, testable, security-aware email system with basic intelligence and distributed behavior across isolated domains.
+
+
+\section{The Big Design Idea}
+
+The most important architectural idea in this repository is:
+
+Request handlers do short, security-critical work quickly, and slower work is moved into queued background processing.
+
+That is why the code does not put all delivery work directly inside the send request. Instead, the send request:
+
+\begin{enumerate}
+\item authenticates the user
+\item verifies request integrity
+\item validates recipients and attachments
+\item writes sender-visible mailbox state
+\item enqueues local and remote delivery jobs
+\item returns a fast response such as \nolinkurl{queued}
+\end{enumerate}
+
+Then background worker threads process the slower parts:
+
+\begin{itemize}
+\item local inbox insertion
+\item cross-domain relay
+\item inbound delivery from another domain
+\item retries on failure
+\item delivery state refresh
+\end{itemize}
+
+This design lets the project show concurrency thinking, failure handling, and clear separation of concerns.
+
+
+\section{Repository Map}
+
+The repository is intentionally split into layers.
+
+\subsection{1 Top Level}
+
+\nolinkurl{README.md} Project story, architecture overview, security goals, concurrency model, and demo direction.
+
+\nolinkurl{pyproject.toml} Dependencies, editable install metadata, pytest setup, and package config.
+
+\nolinkurl{common/} Shared code used by both client and server.
+
+\nolinkurl{server/} Backend implementation for one domain server.
+
+\nolinkurl{client/} CLI client and its session/signing logic.
+
+\nolinkurl{web/} Browser frontend assets.
+
+\nolinkurl{configs/} Dual-domain example configuration.
+
+\nolinkurl{scripts/} Startup, demo, and stress-test scripts.
+
+\nolinkurl{docs/} Protocol, threat model, testing, assignment mapping, and extension docs.
+
+\nolinkurl{tests/} Automated tests for functional, security, and concurrency-sensitive behavior.
+
+\subsection{2 Why This Layout Matters}
+
+The layout is educationally useful because each folder corresponds to a responsibility boundary:
+
+\begin{itemize}
+\item \nolinkurl{common} defines shared contracts and cryptographic helpers
+\item \nolinkurl{server} implements trusted domain logic
+\item \nolinkurl{client} implements authenticated caller behavior
+\item \nolinkurl{web} implements the browser user interface
+\item \nolinkurl{tests} acts as executable proof of claims made in the docs
+\end{itemize}
+
+This keeps the project explainable.
+
+
+\section{How to Read This Codebase}
+
+A lot of confusion in code reviews comes from reading files in the wrong order. For this project, the best reading order is:
+
+\begin{enumerate}
+\item \nolinkurl{common/config.py}
+\item \nolinkurl{common/schemas.py}
+\item \nolinkurl{common/crypto.py}
+\item \nolinkurl{server/main.py}
+\item \nolinkurl{server/storage.py}
+\item \nolinkurl{server/auth.py}
+\item \nolinkurl{server/rate_limit.py}
+\item \nolinkurl{server/attachments.py}
+\item \nolinkurl{server/mailbox.py}
+\item \nolinkurl{server/relay.py}
+\item \nolinkurl{server/workers.py}
+\item \nolinkurl{client/api.py}
+\item \nolinkurl{web/app.js}
+\item \nolinkurl{tests/test_secure_mail.py}
+\end{enumerate}
+
+Why this order?
+
+\begin{itemize}
+\item \nolinkurl{config.py} tells you how a domain is configured.
+\item \nolinkurl{schemas.py} tells you the shape of the data.
+\item \nolinkurl{crypto.py} tells you how passwords, HMACs, and action tokens work.
+\item \nolinkurl{main.py} shows how everything is wired together.
+\item \nolinkurl{storage.py} reveals the persistent data model.
+\item \nolinkurl{auth.py} explains who is allowed to do what.
+\item \nolinkurl{mailbox.py} is the main business logic.
+\item \nolinkurl{relay.py} and \nolinkurl{workers.py} explain the distributed behavior.
+\item \nolinkurl{client/api.py} and \nolinkurl{web/app.js} show how requests are signed.
+\item \nolinkurl{tests/test_secure_mail.py} proves which claims are actually verified.
+\end{itemize}
+
+
+\section{Shared Layer: common/}
+
+The \nolinkurl{common/} package contains the shared language of the system. This is where the project defines reusable concepts instead of duplicating them across server and client code.
+
+
+\section{common/config.py: Domain Configuration and Storage Isolation}
+
+The file \nolinkurl{common/config.py} defines \nolinkurl{DomainConfig}, a dataclass that describes one mail domain instance.
+
+Important fields include:
+
+\begin{itemize}
+\item \nolinkurl{domain}
+\item \nolinkurl{data_root}
+\item \nolinkurl{peer_domains}
+\item \nolinkurl{host}
+\item \nolinkurl{port}
+\item \nolinkurl{session_ttl_minutes}
+\item \nolinkurl{recall_window_minutes}
+\item \nolinkurl{login_max_attempts}
+\item \nolinkurl{login_window_seconds}
+\item \nolinkurl{lockout_seconds}
+\item \nolinkurl{send_rate_limit_per_minute}
+\item \nolinkurl{upload_rate_limit_bytes_per_minute}
+\item \nolinkurl{max_attachment_bytes}
+\item \nolinkurl{action_secret}
+\item \nolinkurl{relay_secret}
+\item \nolinkurl{ssl_certfile}
+\item \nolinkurl{ssl_keyfile}
+\end{itemize}
+
+\subsection{1 Why This File Is Important}
+
+This file is where configuration stops being "just settings" and becomes part of the security model.
+
+For example:
+
+\begin{itemize}
+\item \nolinkurl{data_root} enforces per-domain storage isolation
+\item \nolinkurl{peer_domains} defines the trust boundary for relay
+\item \nolinkurl{action_secret} signs quick-action tokens
+\item \nolinkurl{relay_secret} authenticates server-to-server relay
+\item lockout and rate limit values shape abuse resistance
+\item recall windows define business logic for message recall
+\end{itemize}
+
+\subsection{2 from\_mapping(...) and from\_file(...)}
+
+\nolinkurl{DomainConfig.from_mapping(...)} converts raw YAML or dict values into a typed config object. It also:
+
+\begin{itemize}
+\item resolves \nolinkurl{data_root} to an absolute path
+\item copies unknown values into \nolinkurl{extra}
+\item applies defaults
+\item calls \nolinkurl{ensure_layout()}
+\end{itemize}
+
+\nolinkurl{from_file(...)} simply reads YAML and passes it to \nolinkurl{from_mapping(...)}.
+
+\subsection{3 ensure\_layout()}
+
+The method creates a predictable domain-local directory structure:
+
+\begin{itemize}
+\item \nolinkurl{<data_root>/users}
+\item \nolinkurl{<data_root>/mail}
+\item \nolinkurl{<data_root>/attachments/blobs}
+\item \nolinkurl{<data_root>/logs}
+\end{itemize}
+
+This is one of the cleanest demonstrations of domain isolation in the code. Server A and Server B do not share the same SQLite file, blob directory, or log directory.
+
+
+\section{common/crypto.py: Passwords, HMACs, and Signed Tokens}
+
+This file is central to the security design.
+
+\subsection{1 Password Hashing}
+
+The project uses Argon2id through \nolinkurl{argon2-cffi}.
+
+\nolinkurl{PASSWORD_HASHER = PasswordHasher(...)}
+
+The chosen settings are modest enough for a local demo but still reflect a real password hashing strategy:
+
+\begin{itemize}
+\item non-plaintext password storage
+\item slow verification relative to simple hashes
+\item salts handled by the library
+\end{itemize}
+
+The key functions are:
+
+\begin{itemize}
+\item \nolinkurl{hash_password(password)}
+\item \nolinkurl{verify_password(password_hash, password)}
+\end{itemize}
+
+This means passwords are not stored in plaintext in the \nolinkurl{users} table.
+
+\subsection{2 Session and Secret Generation}
+
+\nolinkurl{new_session_token()} uses \nolinkurl{secrets.token_urlsafe(32)}.
+
+This is used for:
+
+\begin{itemize}
+\item session tokens
+\item session MAC keys
+\end{itemize}
+
+That means the post-login integrity system has a cryptographically random secret per session.
+
+\subsection{3 Hashing Attachment Content}
+
+\nolinkurl{sha256_hex(data)} computes the content hash of attachment bytes.
+
+This hash becomes the deduplication key for attachment blobs. The system stores logical attachments separately from physical blobs.
+
+\subsection{4 Request and Relay MACs}
+
+\nolinkurl{mac_hex(secret, message)} computes an HMAC-SHA256 hex digest.
+
+This function is reused in two places:
+
+\begin{itemize}
+\item post-login client-to-server request signing
+\item server-to-server relay signing
+\end{itemize}
+
+This is a very important design choice. The project does not treat "logged in" as enough for all future actions. Instead, sensitive state-changing requests are individually authenticated with a MAC over canonical request content.
+
+\subsection{5 Quick Action Tokens}
+
+\nolinkurl{sign_payload(secret, payload)} and \nolinkurl{verify_signed_payload(secret, token)} are used to build safe action buttons inside email details.
+
+Instead of trusting the browser to say "run add\_todo for this message", the server gives the client a signed token that encodes:
+
+\begin{itemize}
+\item the message ID
+\item the recipient
+\item the action type
+\item the action title
+\end{itemize}
+
+When the client sends it back, the server verifies the signature. This is a stronger design than trusting raw action parameters from the UI.
+
+
+\section{common/schemas.py: The API Contract}
+
+This file contains Pydantic models that define the shapes of requests and responses.
+
+Examples:
+
+\begin{itemize}
+\item \nolinkurl{RegisterRequest}
+\item \nolinkurl{LoginRequest}
+\item \nolinkurl{AuthResponse}
+\item \nolinkurl{AttachmentUploadRequest}
+\item \nolinkurl{AttachmentMeta}
+\item \nolinkurl{MailSummary}
+\item \nolinkurl{SendMailRequest}
+\item \nolinkurl{DraftRequest}
+\item \nolinkurl{RecallRequest}
+\item \nolinkurl{GroupCreateRequest}
+\item \nolinkurl{GroupMemberRequest}
+\item \nolinkurl{GroupSendRequest}
+\item \nolinkurl{ActionExecutionRequest}
+\item \nolinkurl{TodoItem}
+\item \nolinkurl{ContactSuggestion}
+\item \nolinkurl{SearchResponse}
+\item \nolinkurl{RelayIncomingRequest}
+\item \nolinkurl{RelayRecallRequest}
+\end{itemize}
+
+\subsection{1 Why This File Matters}
+
+This is the language boundary between modules.
+
+When you read \nolinkurl{server/mailbox.py}, for example, you can understand its inputs because the request shapes are already formalized in \nolinkurl{common/schemas.py}.
+
+\subsection{2 A Few Especially Important Models}
+
+\nolinkurl{RegisterRequest} Includes \nolinkurl{confirm_password}, which was added so the registration flow matches the assignment more strictly.
+
+\nolinkurl{MailSummary} This is the main read-model for a message in the UI. It includes:
+
+\begin{itemize}
+\item IDs
+\item folder
+\item delivery state
+\item sender and recipients
+\item attachments
+\item security flags
+\item keywords
+\item classification
+\item quick replies
+\item quick actions
+\item recall state
+\item read state
+\end{itemize}
+
+This shows that mailbox rows are not just raw mail text. They carry smart and security metadata too.
+
+\nolinkurl{RelayIncomingRequest} This is the cross-domain mail envelope. It includes sender, recipients, thread ID, subject, body, timestamp, and attachments.
+
+
+\section{common/text\_features.py: Lightweight Intelligence}
+
+This file implements the "smart" layer. It is intentionally simple and local. There is no external LLM call and no heavy ML pipeline. That is a strength in a teaching project because the logic is visible and testable.
+
+\subsection{1 Tokenization}
+
+\nolinkurl{tokenize(text)} uses a regex to pull tokens and remove stopwords.
+
+This supports:
+
+\begin{itemize}
+\item keyword extraction
+\item classification
+\item fuzzy search input preparation
+\end{itemize}
+
+\subsection{2 Keyword Extraction}
+
+\nolinkurl{extract_keywords(text, corpus, top_k=5)} is a small TF-IDF-like scorer:
+
+\begin{itemize}
+\item count tokens in the current message
+\item estimate document frequency from a recent local corpus
+\item combine term frequency and inverse document frequency
+\item return top keywords
+\end{itemize}
+
+This gives the project one "algorithmic enhancement" without requiring an external model.
+
+\subsection{3 Classification}
+
+\nolinkurl{classify_message(...)} uses rule-based labels:
+
+\begin{itemize}
+\item Finance
+\item HR
+\item Scheduling
+\item Security
+\item Support
+\item General
+\end{itemize}
+
+This is a simple but understandable classifier. Educationally, this is useful because the reader can see exactly why a message becomes "Security" or "Scheduling".
+
+\subsection{4 Phishing Heuristics}
+
+\nolinkurl{phishing_flags(...)} computes:
+
+\begin{itemize}
+\item \nolinkurl{phishing_score}
+\item \nolinkurl{suspicious}
+\item \nolinkurl{reasons}
+\end{itemize}
+
+It looks for:
+
+\begin{itemize}
+\item urgent or credential language
+\item multiple links
+\item reply-to domain mismatch
+\item action-request language
+\end{itemize}
+
+This is not a production anti-phishing engine, but it satisfies the assignment requirement for basic phishing recognition and is easy to explain in a defense.
+
+\subsection{5 Quick Reply Suggestions}
+
+\nolinkurl{quick_reply_suggestions(...)} generates small reply templates based on the message content.
+
+Examples of triggered logic:
+
+\begin{itemize}
+\item question-like text -> "Yes, that works for me."
+\item meeting or date language -> schedule confirmation or reschedule suggestion
+\item gratitude -> "Thanks, received."
+\end{itemize}
+
+Again, this is advisory logic, not autonomous action.
+
+\subsection{6 Fuzzy Matching}
+
+\nolinkurl{levenshtein(...)} and \nolinkurl{fuzzy_score(...)} power:
+
+\begin{itemize}
+\item mailbox search
+\item contact autocomplete
+\end{itemize}
+
+That means search is not exact-string only.
+
+
+\section{A Note on common/utils.py}
+
+Even though this file is small, it supports the whole project by centralizing boring but important utilities:
+
+\begin{itemize}
+\item UTC timestamps
+\item ISO timestamp formatting
+\item parsing timestamps
+\item generating IDs
+\item normalizing email addresses
+\item extracting email domains
+\item canonical JSON dumping
+\item ensuring directories exist
+\end{itemize}
+
+This matters because security-sensitive systems often break not because of cryptography failure, but because of inconsistent timestamp handling, malformed IDs, or inconsistent serialization. Centralizing these helpers reduces that risk.
+
+
+\section{Server Bootstrap: server/main.py}
+
+\nolinkurl{server/main.py} is the entry point for one domain server.
+
+The main exported function is:
+
+\nolinkurl{create_app(config: DomainConfig, relay_dispatch: RelayDispatch | None = None)}
+
+\subsection{1 What create\_app(...) Does}
+
+It:
+
+\begin{itemize}
+\item creates an \nolinkurl{AppContext}
+\item defines a FastAPI lifespan block
+\item starts worker threads on startup
+\item stops workers on shutdown
+\item registers route modules
+\item attaches context to \nolinkurl{app.state.ctx}
+\end{itemize}
+
+Registered route groups:
+
+\begin{itemize}
+\item \nolinkurl{auth.register_routes(...)}
+\item \nolinkurl{attachments.register_routes(...)}
+\item \nolinkurl{mailbox.register_routes(...)}
+\item \nolinkurl{relay.register_routes(...)}
+\item \nolinkurl{web.register_routes(...)}
+\end{itemize}
+
+\subsection{2 Why This File Is Clean}
+
+This file avoids putting business logic in the bootstrap layer. It wires modules together and leaves the actual work to those modules. That separation makes the project much easier to explain.
+
+\subsection{3 main()}
+
+The CLI entry point:
+
+\begin{itemize}
+\item parses \nolinkurl{--config}
+\item optionally reads TLS cert and key paths
+\item loads \nolinkurl{DomainConfig}
+\item creates the app
+\item runs Uvicorn
+\end{itemize}
+
+So each YAML config file corresponds to one isolated domain process.
+
+
+\section{server/storage.py: The Persistent Heart of the System}
+
+This is one of the most important files in the repository.
+
+It defines:
+
+\begin{itemize}
+\item database schema
+\item \nolinkurl{AppContext}
+\item relay helper methods
+\item queue methods
+\item audit and alert persistence
+\end{itemize}
+
+\subsection{1 Why AppContext Exists}
+
+\nolinkurl{AppContext} bundles domain-local state:
+
+\begin{itemize}
+\item config
+\item relay dispatch function
+\item database path
+\item audit log path
+\item alert log path
+\item worker stop event
+\item worker threads
+\end{itemize}
+
+This gives all route modules a shared domain context without using global variables.
+
+\subsection{2 Database Choice}
+
+The project uses SQLite with:
+
+\begin{itemize}
+\item \nolinkurl{PRAGMA journal_mode=WAL}
+\item \nolinkurl{PRAGMA foreign_keys=ON}
+\item \nolinkurl{check_same_thread=False}
+\end{itemize}
+
+WAL mode helps concurrent access patterns in a local prototype. SQLite is also a good teaching choice because:
+
+\begin{itemize}
+\item it is easy to inspect
+\item it requires no external server
+\item it still supports transactional state
+\end{itemize}
+
+\subsection{3 Core Tables and Their Meaning}
+
+\nolinkurl{users} Stores user accounts and Argon2id password hashes.
+
+\nolinkurl{sessions} Stores active session tokens, per-session HMAC keys, expiry, and last sequence number.
+
+\nolinkurl{rate_events} Stores sliding-window rate limit data.
+
+\nolinkurl{lockouts} Stores temporary login lockout deadlines.
+
+\nolinkurl{request_guards} Stores request IDs, nonces, and sequence metadata to prevent replay.
+
+\nolinkurl{relay_guards} Stores per-domain relay nonces to prevent duplicate relay requests.
+
+\nolinkurl{attachment_blobs} Stores physical attachment blob metadata. This is where deduplication happens.
+
+\nolinkurl{attachments} Stores logical attachment records visible to users.
+
+\nolinkurl{mail_items} Stores mailbox copies. This is one of the most important design decisions: mail is stored as per-owner mailbox items rather than one global message row with dynamic views.
+
+\nolinkurl{mail_attachment_links} Connects mailbox items to attachment IDs for download authorization.
+
+\nolinkurl{groups_store} Stores saved recipient groups.
+
+\nolinkurl{todos} Stores TODO items created from quick actions.
+
+\nolinkurl{contacts} Stores contact history for search and autocomplete.
+
+\nolinkurl{job_queue} Stores persistent background jobs for local delivery, remote delivery, and inbound delivery.
+
+\subsection{4 Why mail\_items Is Designed This Way}
+
+Instead of trying to reconstruct mailbox views from one global canonical message object at read time, the project stores owner-scoped mailbox copies.
+
+Benefits:
+
+\begin{itemize}
+\item easy authorization by \nolinkurl{owner_email}
+\item clean inbox/sent/draft folder reads
+\item simple read/unread tracking
+\item per-user quick actions and quick replies
+\item local recall state updates
+\end{itemize}
+
+This is a very practical educational design.
+
+\subsection{5 Queue Support Methods}
+
+The queue-related methods are:
+
+\begin{itemize}
+\item \nolinkurl{enqueue_job(...)}
+\item \nolinkurl{claim_job(...)}
+\item \nolinkurl{complete_job(...)}
+\item \nolinkurl{fail_job(...)}
+\item \nolinkurl{pending_jobs(...)}
+\item \nolinkurl{wait_for_idle(...)}
+\end{itemize}
+
+These methods turn queueing from a documentation idea into real runtime code.
+
+\nolinkurl{fail_job(...)} is especially instructive because it:
+
+\begin{itemize}
+\item increments attempts
+\item truncates error text
+\item moves the job back to \nolinkurl{pending} with exponential backoff
+\item eventually marks it \nolinkurl{failed}
+\end{itemize}
+
+\subsection{6 Relay Helpers}
+
+\nolinkurl{relay_post_sync(...)} and \nolinkurl{relay_post(...)} send authenticated relay traffic to peer domains.
+
+They:
+
+\begin{itemize}
+\item look up the peer URL from \nolinkurl{peer_domains}
+\item generate timestamp and nonce
+\item build canonical JSON
+\item compute relay HMAC
+\item send the request with relay headers
+\end{itemize}
+
+Important note:
+
+\nolinkurl{verify=False} is used in HTTP clients for the local demo. This is acceptable for a local educational prototype but should be replaced with real certificate verification in a stronger deployment.
+
+\subsection{7 Audit and Alert Persistence}
+
+\nolinkurl{audit(...)} writes JSON lines to \nolinkurl{security.jsonl}.
+
+\nolinkurl{alert(...)} writes JSON lines to \nolinkurl{alerts.jsonl}.
+
+This is a nice demonstration of separating:
+
+\begin{itemize}
+\item full event history
+\item higher-signal operator-facing alert stream
+\end{itemize}
+
+
+\section{server/auth.py: Authentication and Post-Login Integrity}
+
+This file handles:
+
+\begin{itemize}
+\item registration
+\item login
+\item session validation
+\item authenticated request verification
+\end{itemize}
+
+\subsection{1 register(...)}
+
+The register route:
+
+\begin{itemize}
+\item normalizes the email
+\item enforces that the email belongs to the local domain
+\item checks confirm-password match if provided
+\item rejects duplicate users
+\item hashes the password with Argon2id
+\item inserts the user row
+\item logs the event
+\end{itemize}
+
+This directly enforces one of the assignment requirements: domain-local account management with non-plaintext password storage.
+
+\subsection{2 login(...)}
+
+The login route:
+
+\begin{itemize}
+\item normalizes the email
+\item gets the client IP
+\item checks whether the account is currently locked
+\item loads the user row
+\item verifies the password hash
+\item records failures or clears them on success
+\item creates a session token
+\item creates a session key
+\item writes a session row with expiry
+\item returns \nolinkurl{AuthResponse}
+\end{itemize}
+
+An interesting simplification here is that \nolinkurl{session_id} and \nolinkurl{session_token} are currently the same underlying value. That is acceptable in this local prototype but worth mentioning honestly in a lecture or defense.
+
+\subsection{3 get\_current\_user(...)}
+
+This validates:
+
+\begin{itemize}
+\item bearer token present
+\item session row exists
+\item session not expired
+\end{itemize}
+
+It also applies rolling expiry by updating \nolinkurl{last_seen} and \nolinkurl{expires_at}.
+
+\subsection{4 verify\_authenticated\_request(...)}
+
+This is one of the most important functions in the whole system.
+
+It verifies that a state-changing request includes:
+
+\begin{itemize}
+\item \nolinkurl{X-Request-Id}
+\item \nolinkurl{X-Session-Id}
+\item \nolinkurl{X-Seq-No}
+\item \nolinkurl{X-Timestamp}
+\item \nolinkurl{X-Nonce}
+\item \nolinkurl{X-Body-Mac}
+\end{itemize}
+
+It then checks:
+
+\begin{itemize}
+\item the headers are all present
+\item \nolinkurl{X-Session-Id} matches the current session
+\item sequence number is valid
+\item timestamp is within the replay window
+\item the HMAC matches canonical request content
+\item the sequence number is greater than the last seen one
+\item the request ID and nonce have not been used before
+\end{itemize}
+
+Only then does it store the guard values and update \nolinkurl{last_seq_no}.
+
+\subsection{5 Why This Matters}
+
+This is how the project proves secure post-login interaction.
+
+Without this function, a stolen bearer token or replayed request might be enough to repeat an action. With it, the server binds each action to:
+
+\begin{itemize}
+\item a session
+\item a unique request ID
+\item a monotonic sequence number
+\item a nonce
+\item a timestamp
+\item a MAC over the exact request body and metadata
+\end{itemize}
+
+This is much stronger than "user is logged in, so accept every POST".
+
+
+\section{server/rate\_limit.py: Abuse Prevention}
+
+This module implements throttling and lockout logic.
+
+\subsection{1 Sliding Window Budgeting}
+
+The generic functions are:
+
+\begin{itemize}
+\item \nolinkurl{_window_stats(...)}
+\item \nolinkurl{_record_event(...)}
+\item \nolinkurl{_retry_after(...)}
+\item \nolinkurl{_raise_limited(...)}
+\item \nolinkurl{enforce_budget(...)}
+\end{itemize}
+
+These allow the project to build both request-count and byte-budget limits.
+
+\subsection{2 Login Protection}
+
+Relevant functions:
+
+\begin{itemize}
+\item \nolinkurl{check_login_lockout(...)}
+\item \nolinkurl{record_login_failure(...)}
+\item \nolinkurl{clear_login_failures(...)}
+\end{itemize}
+
+The logic uses two buckets:
+
+\begin{itemize}
+\item per-user
+\item per-user-plus-IP
+\end{itemize}
+
+This helps resist both simple brute-force and repeated targeted guessing from a single client address.
+
+\subsection{3 Send and Upload Limits}
+
+Relevant functions:
+
+\begin{itemize}
+\item \nolinkurl{enforce_send_limits(...)}
+\item \nolinkurl{enforce_upload_limits(...)}
+\end{itemize}
+
+Send limits are count-based per minute. Upload limits are byte-budget based per minute.
+
+\subsection{4 Audit and Alert Integration}
+
+When a budget is exceeded, the module writes:
+
+\begin{itemize}
+\item an audit event
+\item an alert event
+\item an HTTP 429 with \nolinkurl{Retry-After}
+\end{itemize}
+
+This connects security enforcement to observability.
+
+
+\section{server/attachments.py: Safe Image Attachments}
+
+This module handles attachment storage and retrieval.
+
+\subsection{1 Allowed Types}
+
+The project only accepts:
+
+\begin{itemize}
+\item \nolinkurl{.png}
+\item \nolinkurl{.jpg}
+\item \nolinkurl{.jpeg}
+\end{itemize}
+
+This narrow scope helps reduce attack surface for the MVP.
+
+\subsection{2 Content Validation}
+
+\nolinkurl{_detect_content_type(data)} checks PNG and JPEG magic bytes.
+
+This is better than trusting the filename extension alone.
+
+\subsection{3 Deduplicated Blob Storage}
+
+\nolinkurl{store_attachment_bytes(...)}:
+
+\begin{itemize}
+\item validates extension
+\item enforces max size
+\item validates magic bytes
+\item hashes the raw bytes with SHA-256
+\item uses that hash as the blob key
+\item stores one physical blob per unique hash
+\item increments \nolinkurl{ref_count} if the same bytes already exist
+\item creates a new logical attachment row every time
+\end{itemize}
+
+This means two users can upload the same image content and the system stores:
+
+\begin{itemize}
+\item multiple attachment records
+\item one shared physical blob
+\end{itemize}
+
+That is a good example of storage optimization under security control.
+
+\subsection{4 Authorization on Download}
+
+The download route checks whether the current user either:
+
+\begin{itemize}
+\item created the attachment
+\item or has a mailbox item linked to it
+\end{itemize}
+
+That prevents ID-based attachment theft.
+
+\subsection{5 Cross-Domain Attachment Transfer}
+
+For relay, attachments are re-encoded to base64 payloads and transferred through the relay request. On the receiving side, they are stored again using the same validation and dedup pipeline.
+
+
+\section{server/phishing.py: Thin Wrapper, Clear Responsibility}
+
+\nolinkurl{server/phishing.py} is intentionally small. It wraps the phishing heuristics in \nolinkurl{common/text_features.py}.
+
+This is a subtle but good design choice. It means the server can speak in terms of "analyze a message for phishing" while the shared text logic stays reusable.
+
+
+\section{server/mailbox.py: Main Business Logic}
+
+This is the largest and most important domain-logic module.
+
+If \nolinkurl{storage.py} is the persistent heart of the system, \nolinkurl{mailbox.py} is the behavioral heart.
+
+It handles:
+
+\begin{itemize}
+\item writing mailbox copies
+\item send dispatch
+\item delivery-state refresh
+\item draft management
+\item read-state updates
+\item recall
+\item groups
+\item quick actions
+\item TODO creation
+\item search
+\item contact autocomplete
+\end{itemize}
+
+\subsection{1 Helper Functions}
+
+\nolinkurl{_touch_contacts(...)} Updates the contact history graph for autocomplete and search.
+
+\nolinkurl{_dedupe_emails(...)} Normalizes and deduplicates recipients.
+
+\nolinkurl{_build_actions(...)} Builds signed quick-action tokens for inbox messages.
+
+\nolinkurl{_mail_row_to_summary(...)} Converts a database row into a \nolinkurl{MailSummary} object.
+
+\subsection{2 store\_mail\_copy(...)}
+
+This function is extremely important because it defines what a stored mailbox copy contains.
+
+When a message is stored, the function computes and stores:
+
+\begin{itemize}
+\item keywords
+\item classification
+\item phishing/security flags
+\item quick reply suggestions for inbox mail
+\item quick actions for inbox mail
+\item read state
+\item recall state
+\item attachment links
+\item contact updates
+\end{itemize}
+
+This means smart features are not treated as a separate afterthought. They are attached at the mailbox-item level.
+
+\subsection{3 Suspicious Mail Handling}
+
+If \nolinkurl{analyze_message(...)} returns \nolinkurl{suspicious=True}, the message classification is forced to \nolinkurl{Suspicious}.
+
+Additionally, when the message is stored in an inbox, a \nolinkurl{suspicious_mail_detected} event is logged.
+
+That ties intelligent detection to the alerting model.
+
+\subsection{4 Sender-Side Delivery State}
+
+\nolinkurl{refresh_sent_delivery_state(...)} inspects the queue and updates the sender's sent-row status to one of:
+
+\begin{itemize}
+\item delivered
+\item queued
+\item recalled
+\item partial
+\item failed
+\end{itemize}
+
+This is a nice teaching point because it shows how mailbox UI state can be derived from background job state.
+
+\subsection{5 dispatch\_message(...)}
+
+This is the send pipeline.
+
+It:
+
+\begin{itemize}
+\item normalizes recipients and CCs
+\item loads/export attachments
+\item creates message ID and thread ID
+\item splits recipients into local and remote groups
+\item validates local recipients exist
+\item validates remote domains are known peers
+\item stores the sender's sent copy with \nolinkurl{delivery_state="queued"}
+\item enqueues \nolinkurl{local_delivery} and \nolinkurl{remote_delivery} jobs
+\item logs \nolinkurl{mail_sent}
+\item returns a queued response
+\end{itemize}
+
+This function is a key demonstration of queue-first architecture.
+
+\subsection{6 Draft Handling}
+
+The draft route can:
+
+\begin{itemize}
+\item save a draft
+\item update an existing draft
+\item optionally send immediately from a draft
+\end{itemize}
+
+This satisfies the assignment requirement for a drafts folder instead of only send-or-nothing behavior.
+
+\subsection{7 Recall Logic}
+
+The recall route enforces several checks:
+
+\begin{itemize}
+\item the authenticated user must own the sent message
+\item the message must be in the sent folder
+\item the recall window must not be expired
+\item local pending jobs can be cancelled
+\item unread delivered inbox copies can be marked recalled
+\item remote recipients are handled through relay recall
+\end{itemize}
+
+This is more robust than simply flipping a boolean in the sender's mailbox.
+
+\subsection{8 Group Operations}
+
+The module implements:
+
+\begin{itemize}
+\item group create
+\item group member add
+\item send to saved group
+\end{itemize}
+
+Groups are stored per owner in \nolinkurl{groups_store}, not globally.
+
+\subsection{9 Quick Actions}
+
+The available actions are:
+
+\begin{itemize}
+\item \nolinkurl{add_todo}
+\item \nolinkurl{acknowledge}
+\end{itemize}
+
+The server verifies the signed token before applying the action. This is exactly the kind of "useful but safe" interactive mail feature the assignment asked for.
+
+\subsection{10 Search and Autocomplete}
+
+Search works by scoring mailbox content and contact emails using \nolinkurl{fuzzy_score}.
+
+Autocomplete uses the same fuzzy approach over the contact store.
+
+This is local, understandable, and sufficient for the prototype scope.
+
+
+\section{server/relay.py: Trusted Cross-Domain Delivery}
+
+This file handles the distributed part of the assignment.
+
+Two routes are implemented:
+
+\begin{itemize}
+\item \nolinkurl{/v1/relay/incoming}
+\item \nolinkurl{/v1/relay/recall}
+\end{itemize}
+
+\subsection{1 Relay Verification}
+
+\nolinkurl{_verify_relay_request(...)} checks:
+
+\begin{itemize}
+\item the source domain is trusted
+\item required relay headers exist
+\item the timestamp is valid and recent
+\item the relay MAC matches canonical content
+\item the relay nonce has not already been used
+\end{itemize}
+
+This prevents:
+
+\begin{itemize}
+\item forged relay requests
+\item replayed relay delivery
+\item duplicate inbound processing
+\end{itemize}
+
+\subsection{2 Incoming Relay}
+
+The incoming relay handler:
+
+\begin{itemize}
+\item checks the claimed relay domain matches the body
+\item verifies relay security
+\item ensures all recipients belong to the local domain
+\item ensures recipients exist
+\item enqueues an \nolinkurl{inbound_delivery} job
+\item logs the event
+\end{itemize}
+
+Notice that it does not directly store the inbox row inline. That work is queued for the inbound worker.
+
+\subsection{3 Relay Recall}
+
+The recall relay handler:
+
+\begin{itemize}
+\item verifies relay security
+\item cancels pending inbound jobs where possible
+\item applies recall to already-inserted unread inbox copies
+\item logs the result
+\end{itemize}
+
+This design covers both "not delivered yet" and "already inserted but unread" cases.
+
+
+\section{server/workers.py: Background Delivery Runtime}
+
+This file makes the concurrent architecture real.
+
+\subsection{1 Worker Startup}
+
+\nolinkurl{start_workers(ctx)} launches:
+
+\begin{itemize}
+\item \nolinkurl{delivery-worker-1}
+\item \nolinkurl{delivery-worker-2}
+\item \nolinkurl{inbound-worker-1}
+\end{itemize}
+
+Each worker has a set of job types it is allowed to claim.
+
+\subsection{2 Worker Loop}
+
+\nolinkurl{_worker_loop(...)}:
+
+\begin{itemize}
+\item continuously claims eligible jobs
+\item sleeps if no work is available
+\item processes jobs
+\item schedules retries on failure
+\item completes jobs on success
+\item refreshes sent delivery state where relevant
+\item logs all meaningful outcomes
+\end{itemize}
+
+\subsection{3 Job Type Routing}
+
+\nolinkurl{_process_job(...)} dispatches to:
+
+\begin{itemize}
+\item \nolinkurl{_process_local_delivery(...)}
+\item \nolinkurl{_process_remote_delivery(...)}
+\item \nolinkurl{_process_inbound_delivery(...)}
+\end{itemize}
+
+This keeps the queue engine generic while job behavior stays readable.
+
+\subsection{4 Local Delivery}
+
+Local delivery stores inbox copies for users in the same domain.
+
+\subsection{5 Remote Delivery}
+
+Remote delivery sends a relay request to the peer domain.
+
+\subsection{6 Inbound Delivery}
+
+Inbound delivery:
+
+\begin{itemize}
+\item stores relay attachments locally
+\item inserts inbox copies for local recipients
+\end{itemize}
+
+\subsection{7 Why This File Matters So Much}
+
+Without this file, the queue design would be aspirational. With this file, the system actually behaves like a small asynchronous distributed system.
+
+
+\section{server/logging.py: Structured Audit and Alerts}
+
+This module is intentionally small, but its role is important.
+
+\nolinkurl{log_event(...)} always writes an audit event. For certain event types, it also writes an alert.
+
+Alert-producing event types currently include:
+
+\begin{itemize}
+\item \nolinkurl{job_failed}
+\item \nolinkurl{login_lockout}
+\item \nolinkurl{send_rate_limited}
+\item \nolinkurl{upload_rate_limited}
+\item \nolinkurl{login_rate_limited}
+\item \nolinkurl{relay_replay_rejected}
+\item \nolinkurl{request_replay_rejected}
+\item \nolinkurl{request_mac_failed}
+\item \nolinkurl{relay_mac_failed}
+\item \nolinkurl{suspicious_mail_detected}
+\end{itemize}
+
+This gives the project a clean concept of:
+
+\begin{itemize}
+\item everything that happened
+\item the smaller subset that should draw attention
+\end{itemize}
+
+
+\section{server/web.py: Serving the Browser Frontend}
+
+This file serves the web client.
+
+Routes:
+
+\begin{itemize}
+\item \nolinkurl{/} -> \nolinkurl{index.html}
+\item \nolinkurl{/static/...} -> frontend assets
+\item \nolinkurl{/api-info} -> JSON endpoint overview
+\item \nolinkurl{/favicon.ico} -> empty 204
+\end{itemize}
+
+Why it matters:
+
+\begin{itemize}
+\item users can test the system from a browser
+\item the browser is a real client, not just a static page
+\item the API remains the same secure backend underneath
+\end{itemize}
+
+
+\section{Client Layer: client/}
+
+The \nolinkurl{client/} package gives the project a CLI frontend.
+
+This is useful for:
+
+\begin{itemize}
+\item testing
+\item automation
+\item demonstrations
+\item comparing browser and script behavior
+\end{itemize}
+
+
+\section{client/api.py: Session Store and Signed API Calls}
+
+This file is the CLI-side mirror of the server's authenticated request model.
+
+\subsection{1 SessionState}
+
+Stores:
+
+\begin{itemize}
+\item email
+\item base URL
+\item session ID
+\item session token
+\item session key
+\item sequence number
+\end{itemize}
+
+\subsection{2 SessionStore}
+
+Stores per-user session JSON files under \nolinkurl{.client_state/}.
+
+This lets the CLI remember login state across commands.
+
+\subsection{3 ApiClient.register(...)}
+
+Sends registration with confirm-password support.
+
+\subsection{4 ApiClient.login(...)}
+
+Logs in, receives session info, saves local session state.
+
+\subsection{5 \_auth\_headers(...)}
+
+This is the CLI counterpart to \nolinkurl{verify_authenticated_request(...)}.
+
+It:
+
+\begin{itemize}
+\item increments sequence number
+\item generates request ID
+\item generates nonce
+\item computes current timestamp
+\item builds canonical JSON
+\item computes HMAC
+\item attaches all auth headers
+\item saves updated session state
+\end{itemize}
+
+This is a very good example of client and server sharing one protocol.
+
+\subsection{6 API Convenience Methods}
+
+The rest of the class maps user actions to routes:
+
+\begin{itemize}
+\item inbox, sent, drafts
+\item message inspection
+\item upload
+\item send
+\item save draft
+\item mark read
+\item recall
+\item group create/add/send
+\item execute action
+\item todos
+\item search
+\item autocomplete
+\end{itemize}
+
+
+\section{client/cli.py, client/ui.py, and client/quick\_reply.py}
+
+These files round out the CLI layer.
+
+\nolinkurl{client/cli.py} Defines command-line arguments and dispatches them to \nolinkurl{ApiClient}.
+
+\nolinkurl{client/ui.py} Formats output for CLI display.
+
+\nolinkurl{client/quick_reply.py} Chooses reply text from either explicit user text or generated suggestions.
+
+Together, these files keep the CLI code cleaner than if everything lived in one large script.
+
+
+\section{Browser Frontend: web/index.html}
+
+The browser UI is not just decorative. It exposes nearly all core features.
+
+The main UI areas are:
+
+\begin{itemize}
+\item registration form
+\item login form
+\item compose form
+\item attachment upload
+\item search form
+\item group creation
+\item group send
+\item mailbox tabs
+\item detail view
+\end{itemize}
+
+It also displays:
+
+\begin{itemize}
+\item current domain
+\item current user
+\item sequence number
+\end{itemize}
+
+This helps the user see the security/session state at a glance.
+
+
+\section{Browser Frontend Logic: web/app.js}
+
+This file is the browser equivalent of the CLI client plus extra UI behavior.
+
+\subsection{1 State Model}
+
+The global \nolinkurl{state} object stores:
+
+\begin{itemize}
+\item current domain
+\item current session
+\item active mailbox tab
+\item mailbox data
+\item todos
+\item search contacts
+\item selected message
+\item compose attachments
+\item attachment preview
+\end{itemize}
+
+\subsection{2 Session Persistence}
+
+The browser stores session data in \nolinkurl{localStorage}.
+
+\subsection{3 Register and Login}
+
+\nolinkurl{handleRegister()}:
+
+\begin{itemize}
+\item checks email, password, confirm password
+\item validates password match client-side
+\item calls \nolinkurl{/v1/auth/register}
+\end{itemize}
+
+\nolinkurl{handleLogin()}:
+
+\begin{itemize}
+\item logs in
+\item stores session token and session key
+\item resets sequence number to 0
+\item refreshes mailbox data
+\end{itemize}
+
+\subsection{4 Signed Browser Requests}
+
+\nolinkurl{buildSignedHeaders(path, body)}:
+
+\begin{itemize}
+\item increments \nolinkurl{seq_no}
+\item generates request ID and nonce
+\item computes timestamp
+\item builds canonical JSON
+\item signs it with Web Crypto HMAC-SHA256
+\end{itemize}
+
+This means the browser and CLI both participate in the same secure request protocol.
+
+\subsection{5 Client-Side Anti-Abuse Guard}
+
+\nolinkurl{runClientGuard(key, action)} adds:
+
+\begin{itemize}
+\item duplicate-submit blocking while an action is already running
+\item a short cooldown before the same action can repeat
+\end{itemize}
+
+This is not the primary enforcement layer. The server still makes the real security decision. But it is a useful client-side anti-misfire and light anti-burst measure.
+
+\subsection{6 Rendering Safety}
+
+The frontend renders mail text using \nolinkurl{escapeHtml(...)}.
+
+This is an important security choice. It prevents a message body like:
+
+\nolinkurl{<img src="x" onerror="alert(1)">}
+
+from executing as code in the browser UI.
+
+\subsection{7 Detail View}
+
+The detail panel shows:
+
+\begin{itemize}
+\item message metadata
+\item phishing score and reasons
+\item keywords
+\item attachments
+\item quick reply buttons
+\item quick action buttons
+\item recall or mark-read buttons when appropriate
+\end{itemize}
+
+This is a strong educational UI because it surfaces internal system metadata to the user instead of hiding it.
+
+
+\section{End-to-End Flow: Registration}
+
+Let us walk through the actual code path for registration.
+
+\subsection{1 Browser or CLI Side}
+
+The client sends:
+
+\begin{itemize}
+\item email
+\item password
+\item confirm password
+\end{itemize}
+
+\subsection{2 Server Side}
+
+\nolinkurl{server/auth.py -> register(...)}
+
+It:
+
+\begin{itemize}
+\item normalizes the email
+\item checks that the email domain matches the local server domain
+\item checks password confirmation
+\item checks the user does not already exist
+\item hashes the password
+\item inserts the user row
+\item logs the register event
+\end{itemize}
+
+\subsection{3 Storage Side}
+
+The \nolinkurl{users} table receives:
+
+\begin{itemize}
+\item email
+\item password hash
+\item created timestamp
+\end{itemize}
+
+
+\section{End-to-End Flow: Login}
+
+\subsection{1 Client Side}
+
+The client sends email and password.
+
+\subsection{2 Server Side}
+
+\nolinkurl{server/auth.py -> login(...)}
+
+It:
+
+\begin{itemize}
+\item checks lockout state
+\item verifies password hash
+\item records failure or clears prior failures
+\item issues session token and session key
+\item stores session row with expiry
+\end{itemize}
+
+\subsection{3 Result}
+
+The client now has:
+
+\begin{itemize}
+\item bearer token for session identity
+\item session key for HMAC request signing
+\end{itemize}
+
+This is the foundation of all later protected POST actions.
+
+
+\section{End-to-End Flow: Signed Authenticated POST}
+
+Take \nolinkurl{send mail} as an example.
+
+\subsection{1 Client Builds Headers}
+
+The client computes:
+
+\begin{itemize}
+\item request ID
+\item session ID
+\item sequence number
+\item timestamp
+\item nonce
+\item HMAC over canonical request content
+\end{itemize}
+
+\subsection{2 Server Verifies Them}
+
+\nolinkurl{server/auth.py -> verify_authenticated_request(...)}
+
+The server checks:
+
+\begin{itemize}
+\item the session exists and is not expired
+\item the timestamp is fresh
+\item the HMAC matches
+\item the request ID and nonce are unused
+\item the sequence number is strictly increasing
+\end{itemize}
+
+\subsection{3 Why This Is Better Than a Plain Session Cookie}
+
+This protects against:
+
+\begin{itemize}
+\item replaying old requests
+\item duplicating actions accidentally or maliciously
+\item tampering with the request body
+\item stale or reordered action reuse
+\end{itemize}
+
+
+\section{End-to-End Flow: Local Mail Send}
+
+Suppose Alice on \nolinkurl{a.test} sends to Carol on \nolinkurl{a.test}.
+
+\subsection{1 Request Handling}
+
+\nolinkurl{server/mailbox.py -> send(...)}
+
+This:
+
+\begin{itemize}
+\item verifies the authenticated request
+\item enforces send rate limits
+\item calls \nolinkurl{dispatch_message(...)}
+\end{itemize}
+
+\subsection{2 Dispatch}
+
+\nolinkurl{dispatch_message(...)}:
+
+\begin{itemize}
+\item stores the sender's sent copy
+\item enqueues a \nolinkurl{local_delivery} job
+\item returns \nolinkurl{queued}
+\end{itemize}
+
+\subsection{3 Worker Completion}
+
+\nolinkurl{server/workers.py -> _process_local_delivery(...)}
+
+The worker stores Carol's inbox copy.
+
+\subsection{4 Delivery State}
+
+After the job completes, sender-side sent state becomes \nolinkurl{delivered}.
+
+
+\section{End-to-End Flow: Cross-Domain Mail Send}
+
+Suppose Alice on \nolinkurl{a.test} sends to Bob on \nolinkurl{b.test}.
+
+\subsection{1 On Domain A}
+
+The request path is the same at first:
+
+\begin{itemize}
+\item verify request
+\item enforce send limits
+\item create sent copy
+\item enqueue \nolinkurl{remote_delivery}
+\end{itemize}
+
+\subsection{2 Delivery Worker on Domain A}
+
+\nolinkurl{_process_remote_delivery(...)} calls \nolinkurl{ctx.relay_post_sync(...)}.
+
+This sends:
+
+\begin{itemize}
+\item source domain
+\item source email
+\item recipients
+\item subject and body
+\item thread and message IDs
+\item attachments
+\end{itemize}
+
+with relay headers:
+
+\begin{itemize}
+\item \nolinkurl{X-Relay-Domain}
+\item \nolinkurl{X-Relay-Timestamp}
+\item \nolinkurl{X-Relay-Nonce}
+\item \nolinkurl{X-Relay-Mac}
+\end{itemize}
+
+\subsection{3 On Domain B}
+
+\nolinkurl{server/relay.py -> relay_incoming(...)}
+
+This verifies:
+
+\begin{itemize}
+\item trusted source domain
+\item timestamp
+\item nonce uniqueness
+\item HMAC
+\item recipient ownership by the destination domain
+\end{itemize}
+
+Then it enqueues \nolinkurl{inbound_delivery}.
+
+\subsection{4 Inbound Worker on Domain B}
+
+\nolinkurl{_process_inbound_delivery(...)}:
+
+\begin{itemize}
+\item stores attachments locally
+\item writes Bob's inbox copy
+\item logs success
+\end{itemize}
+
+This is the distributed mail path.
+
+
+\section{End-to-End Flow: Recall}
+
+Recall is one of the more subtle flows because it must handle race conditions.
+
+\subsection{1 Sender Requests Recall}
+
+The sender sends a signed recall request.
+
+\subsection{2 Local Validation}
+
+\nolinkurl{server/mailbox.py -> recall(...)}
+
+Checks:
+
+\begin{itemize}
+\item message exists in sender sent folder
+\item sender owns it
+\item recall window has not expired
+\end{itemize}
+
+\subsection{3 Queue-Aware Recall}
+
+The system first tries to cancel pending jobs.
+
+If mail is still queued and not delivered yet, cancelling the job is enough for that recipient.
+
+\subsection{4 Delivered Recall}
+
+For already-delivered local inbox copies, \nolinkurl{apply_recall(...)} checks:
+
+\begin{itemize}
+\item not already recalled
+\item not already read
+\item still inside recall window
+\end{itemize}
+
+Only then does it mark the mail recalled.
+
+\subsection{5 Remote Recall}
+
+For cross-domain recipients, the sender's server sends relay recall to the peer.
+
+\subsection{6 Why This Design Is Good}
+
+It avoids a common prototype mistake: pretending recall is always possible by blindly updating sender-side state only.
+
+
+\section{End-to-End Flow: Quick Actions}
+
+Quick actions show how the project treats convenience features safely.
+
+\subsection{1 Token Creation}
+
+When inbox mail is stored, \nolinkurl{_build_actions(...)} creates signed action tokens.
+
+\subsection{2 Token Execution}
+
+The client sends the token to \nolinkurl{/v1/actions/execute}.
+
+The server:
+
+\begin{itemize}
+\item verifies the request HMAC
+\item verifies the action token signature
+\item verifies that the token belongs to the current recipient
+\item verifies that the action type is allowed
+\item performs the action
+\end{itemize}
+
+This is far safer than trusting raw \nolinkurl{message_id} plus \nolinkurl{action} input from the browser.
+
+
+\section{End-to-End Flow: Search and Smart Suggestions}
+
+When inbox mail is stored, the system already computes:
+
+\begin{itemize}
+\item keywords
+\item classification
+\item phishing flags
+\item quick replies
+\end{itemize}
+
+Later:
+
+\begin{itemize}
+\item search scores messages using fuzzy matching
+\item autocomplete scores prior contacts
+\item quick reply buttons let the user answer quickly
+\end{itemize}
+
+The important design choice is that all of these features are advisory. None of them automatically mutate privileged state without explicit user action and server validation.
+
+
+\section{Data Model Deep Dive}
+
+This section is useful if you need to explain the project in a more database- oriented way.
+
+\subsection{1 Users and Sessions}
+
+\nolinkurl{users} Identity store.
+
+\nolinkurl{sessions} Active authenticated state. Also stores the per-session request-signing key and the last accepted sequence number.
+
+This is what makes replay defense possible without storing every past request forever.
+
+\subsection{2 Replay Defense Tables}
+
+\nolinkurl{request_guards} Prevents duplicate authenticated user requests.
+
+\nolinkurl{relay_guards} Prevents duplicate relay traffic between servers.
+
+\subsection{3 Mail and Attachments}
+
+\nolinkurl{mail_items} Mailbox-facing message copies.
+
+\nolinkurl{attachments} Logical attachment records.
+
+\nolinkurl{attachment_blobs} Physical deduplicated content storage.
+
+\nolinkurl{mail_attachment_links} Authorization bridge between mailbox items and attachment IDs.
+
+\subsection{4 Productivity and Smart UX}
+
+\nolinkurl{groups_store} Saved groups for group send.
+
+\nolinkurl{contacts} History-based autocomplete and search hints.
+
+\nolinkurl{todos} Quick action output.
+
+\subsection{5 Asynchronous Runtime}
+
+\nolinkurl{job_queue} Backbone of queued delivery and retry behavior.
+
+
+\section{Browser UI as a Security Teaching Tool}
+
+The browser UI is educationally useful because it exposes otherwise invisible state:
+
+\begin{itemize}
+\item active domain
+\item logged-in user
+\item sequence number
+\item phishing score
+\item suspicious reasons
+\item quick replies
+\item signed quick actions
+\item delivery state
+\end{itemize}
+
+In a presentation or lecture, this lets you show that the project is not only secure in backend code, but also designed to make security-relevant state inspectable.
+
+
+\section{Testing Philosophy}
+
+The project does not treat tests as an afterthought. The tests in \nolinkurl{tests/test_secure_mail.py} are written as executable acceptance evidence.
+
+\subsection{1 Test Fixture Setup}
+
+The \nolinkurl{app_pair()} fixture:
+
+\begin{itemize}
+\item creates temporary isolated storage roots
+\item creates domain A and domain B configs
+\item creates two apps
+\item injects in-memory relay dispatch functions
+\item wraps both in \nolinkurl{TestClient}
+\end{itemize}
+
+This is clever because it tests two-domain behavior without needing real network sockets.
+
+\subsection{2 \_signed\_headers(...)}
+
+The tests sign authenticated requests the same way the real clients do.
+
+That means tests are not bypassing security. They are exercising the actual request-integrity mechanism.
+
+\subsection{3 \_relay(...)}
+
+The helper signs relay requests using the test relay secret. This allows the tests to validate real relay authentication logic.
+
+
+\section{Walkthrough of Key Tests}
+
+\subsection{1 test\_login\_lockout}
+
+Proves that repeated bad passwords trigger temporary lockout and a \nolinkurl{Retry-After} response.
+
+\subsection{2 test\_register\_requires\_matching\_confirmation}
+
+Proves confirm-password enforcement is real, not just a frontend hint.
+
+\subsection{3 test\_web\_root\_is\_served}
+
+Proves the web frontend is actually served by the backend.
+
+\subsection{4 test\_cross\_domain\_send\_attachment\_recall\_and\_tamper}
+
+This is one of the best tests in the suite because it covers many features at once:
+
+\begin{itemize}
+\item upload attachment
+\item send cross-domain mail
+\item worker delivery
+\item sent state becomes delivered
+\item inbox attachment visibility
+\item quick action token tamper rejection
+\item recall behavior
+\end{itemize}
+
+\subsection{5 test\_phishing\_sample\_is\_flagged}
+
+Proves suspicious mail can be labeled as suspicious based on heuristic content.
+
+\subsection{6 test\_attachment\_dedup\_reuses\_single\_blob}
+
+Proves deduplication actually happens at the blob layer.
+
+\subsection{7 test\_cc\_recipients\_are\_delivered}
+
+Proves CC is part of delivery behavior, not just metadata.
+
+\subsection{8 test\_concurrent\_multi\_client\_send\_and\_receive}
+
+This is the main concurrency acceptance test.
+
+It creates multiple senders in parallel and confirms Bob eventually receives all messages.
+
+\subsection{9 test\_replay\_rejected}
+
+Proves that repeating the same signed request is rejected.
+
+\subsection{10 test\_invalid\_attachment\_rejected}
+
+Proves content-type spoofing by filename does not work.
+
+\subsection{11 test\_send\_rate\_limit}
+
+Proves the server enforces anti-spam/anti-burst rate limiting.
+
+
+\section{Security Model Mapped Directly to Code}
+
+This section connects the threat model to implementation.
+
+\subsection{1 Password Theft Risk}
+
+Mitigation in code:
+
+\begin{itemize}
+\item \nolinkurl{common/crypto.py -> hash_password}
+\item \nolinkurl{common/crypto.py -> verify_password}
+\end{itemize}
+
+\subsection{2 Brute-Force Login}
+
+Mitigation in code:
+
+\begin{itemize}
+\item \nolinkurl{server/rate_limit.py -> check_login_lockout}
+\item \nolinkurl{server/rate_limit.py -> record_login_failure}
+\item \nolinkurl{server/auth.py -> login}
+\end{itemize}
+
+\subsection{3 Tampered Authenticated Request}
+
+Mitigation in code:
+
+\begin{itemize}
+\item \nolinkurl{client/api.py -> _auth_headers}
+\item \nolinkurl{web/app.js -> buildSignedHeaders}
+\item \nolinkurl{server/auth.py -> verify_authenticated_request}
+\end{itemize}
+
+\subsection{4 Replay Attack}
+
+Mitigation in code:
+
+\begin{itemize}
+\item \nolinkurl{request_guards}
+\item \nolinkurl{relay_guards}
+\item sequence tracking in \nolinkurl{sessions.last_seq_no}
+\end{itemize}
+
+\subsection{5 Open Relay or Forged Relay}
+
+Mitigation in code:
+
+\begin{itemize}
+\item \nolinkurl{server/relay.py -> _verify_relay_request}
+\item domain trust mapping in \nolinkurl{peer_domains}
+\end{itemize}
+
+\subsection{6 Attachment Abuse}
+
+Mitigation in code:
+
+\begin{itemize}
+\item extension allowlist
+\item magic byte validation
+\item size limit
+\item generated storage path
+\item access control on download
+\end{itemize}
+
+\subsection{7 Quick Action Forgery}
+
+Mitigation in code:
+
+\begin{itemize}
+\item \nolinkurl{sign_payload(...)}
+\item \nolinkurl{verify_signed_payload(...)}
+\item recipient binding check in \nolinkurl{execute_action(...)}
+\end{itemize}
+
+\subsection{8 XSS From Malicious Mail}
+
+Mitigation in code:
+
+\begin{itemize}
+\item \nolinkurl{web/app.js -> escapeHtml}
+\end{itemize}
+
+This point connects directly to \nolinkurl{docs/malicious_mail_poc.md}.
+
+
+\section{Document Set and How It Relates to the Code}
+
+This repository already contains a strong document set. Here is how each one fits into the codebase.
+
+\subsection{1 docs/protocol.md}
+
+Explains the wire protocol:
+
+\begin{itemize}
+\item auth endpoints
+\item signed request headers
+\item send/draft/recall shapes
+\item relay headers
+\item lifecycle states
+\end{itemize}
+
+Use this when explaining client/server or server/server communication.
+
+\subsection{2 docs/threat\_model.md}
+
+Explains:
+
+\begin{itemize}
+\item assets
+\item trust boundaries
+\item threats
+\item mitigations
+\item residual risk
+\end{itemize}
+
+Use this when explaining the security story at the design level.
+
+\subsection{3 docs/test\_report.md}
+
+Explains:
+
+\begin{itemize}
+\item test goals
+\item executed command
+\item current result
+\item known gaps
+\end{itemize}
+
+Use this to defend the "testable and reproducible" requirement.
+
+\subsection{4 docs/assignment\_coverage.md}
+
+Maps assignment lines to concrete implementation files. This is excellent for a grader or examiner.
+
+\subsection{5 docs/implementation\_structure.txt}
+
+Explains repository structure and module purpose in a shorter overview form.
+
+\subsection{6 docs/alerting\_and\_audit.md}
+
+Explains the logging model:
+
+\begin{itemize}
+\item audit stream
+\item alert stream
+\item event examples
+\end{itemize}
+
+\subsection{7 docs/end\_to\_end\_encryption\_design.md}
+
+This is a design extension document. It explains how the system could evolve to client-side end-to-end encryption.
+
+\subsection{8 docs/malicious\_mail\_poc.md}
+
+Explains the risk of unsafe HTML rendering in email clients and shows why the current browser rendering is safer.
+
+\subsection{9 docs/p2p\_feasibility.md}
+
+Explores whether the project should become P2P and concludes that a hybrid approach would be more realistic than pure P2P for this system.
+
+
+\section{Bonus and Extension Topics}
+
+The repository includes bonus-topic documentation even when the runtime code does not fully implement the extension.
+
+\subsection{1 End-to-End Encryption}
+
+The existing architecture could evolve toward:
+
+\begin{itemize}
+\item public/private key pairs per user
+\item hybrid encryption per message
+\item ciphertext storage and relay
+\end{itemize}
+
+But then:
+
+\begin{itemize}
+\item server-side search
+\item server-side phishing analysis
+\item server-side quick replies
+\end{itemize}
+
+would need to move client-side or become metadata-limited.
+
+\subsection{2 Malicious Mail Scripts}
+
+The code already takes a defensive stance:
+
+\begin{itemize}
+\item no raw HTML rendering of email body
+\item escaped text output in the browser
+\item advisory-only smart features
+\end{itemize}
+
+This is the right posture for hostile-content handling.
+
+\subsection{3 P2P Feasibility}
+
+The docs correctly note that pure P2P mail introduces major challenges:
+
+\begin{itemize}
+\item offline availability
+\item NAT traversal
+\item spam resistance
+\item metadata leakage
+\item weaker auditability
+\end{itemize}
+
+So P2P remains a design study, not the runtime model.
+
+
+\section{What Is Especially Good About This Codebase}
+
+This section is useful if you need to defend or evaluate the project.
+
+\subsection{1 It Is Small but Real}
+
+The system is small enough to read, but it still contains:
+
+\begin{itemize}
+\item distributed delivery
+\item storage isolation
+\item background workers
+\item replay defense
+\item attachment security
+\item testing
+\end{itemize}
+
+\subsection{2 Security Is Not Bolted On}
+
+Security is visible in:
+
+\begin{itemize}
+\item schemas
+\item login logic
+\item session model
+\item request MACs
+\item relay MACs
+\item attachment validation
+\item token signing
+\item audit and alert logging
+\item frontend escaping
+\end{itemize}
+
+\subsection{3 The Smart Features Are Bounded}
+
+The project does not pretend intelligence is magic. The smart layer is:
+
+\begin{itemize}
+\item local
+\item understandable
+\item reproducible
+\item advisory
+\end{itemize}
+
+That is a healthy design choice.
+
+\subsection{4 The Tests Prove Real Claims}
+
+The tests cover both happy paths and negative/security paths. That makes the project much stronger than a demo that only works on stage.
+
+
+\section{Honest Limitations}
+
+No serious educational lecture should hide limitations.
+
+\subsection{1 TLS in Demo Mode}
+
+The architecture expects HTTPS/TLS, but the local demo often uses plain local HTTP or unverified TLS.
+
+\subsection{2 SQLite Scope}
+
+SQLite is appropriate here, but a production distributed mail platform would need stronger operational guarantees and probably a different persistence model.
+
+\subsection{3 Heuristic Intelligence}
+
+Phishing detection, classification, and quick replies are simple heuristics, not advanced ML or LLM systems.
+
+\subsection{4 Session Simplification}
+
+\nolinkurl{session_id} and \nolinkurl{session_token} are currently the same underlying value. This is acceptable for the prototype but worth improving in a stronger design.
+
+\subsection{5 Queue Reliability Scope}
+
+The queue already supports retries and persistence, but it does not yet include:
+
+\begin{itemize}
+\item dead-letter queues
+\item rich monitoring dashboard
+\item advanced worker health reporting
+\end{itemize}
+
+
+\section{How to Explain This Project in an Exam or Presentation}
+
+If someone asks, "What did you actually program?", a strong answer is:
+
+I built a local secure email prototype with two isolated domains. Each domain is a FastAPI server with its own SQLite database, blob storage, logs, and worker threads. Users can register, log in, send mail, save drafts, upload image attachments, recall unread mail, send to groups, search mail, use quick reply suggestions, and trigger safe quick actions. After login, all important POST requests are protected by per-session HMAC signing with request ID, timestamp, nonce, and sequence number. Cross-domain delivery is handled through authenticated relay endpoints and a persistent job queue. The system also implements brute-force protection, send and upload rate limiting, phishing heuristics, attachment deduplication, structured audit logs, structured alerts, and automated tests.
+
+That answer is accurate, concise, and grounded in the code.
+
+
+\section{Suggested Reading Path for a New Developer}
+
+If a new developer joins the project, tell them to do this:
+
+\begin{enumerate}
+\item Read \nolinkurl{README.md} for the story.
+\item Read \nolinkurl{docs/assignment_coverage.md} for the requirement mapping.
+\item Read \nolinkurl{server/main.py} to see how the app is assembled.
+\item Read \nolinkurl{server/storage.py} to understand the state model.
+\item Read \nolinkurl{server/auth.py} to understand trust and sessions.
+\item Read \nolinkurl{server/mailbox.py} to understand mailbox behavior.
+\item Read \nolinkurl{server/relay.py} and \nolinkurl{server/workers.py} to understand distribution.
+\item Read \nolinkurl{web/app.js} to understand the browser client.
+\item Run \nolinkurl{tests/test_secure_mail.py} and study the flows.
+\end{enumerate}
+
+This sequence reduces confusion quickly.
+
+
+\section{Study Questions}
+
+These questions can be used for revision, presentation prep, or a classroom discussion.
+
+\begin{enumerate}
+\item Why is per-domain \nolinkurl{data_root} a security property and not just a deployment
+\end{enumerate}
+detail?
+\begin{enumerate}
+\item Why does the project use both bearer sessions and per-request HMAC?
+\item What problem is solved by \nolinkurl{request_guards} beyond normal authentication?
+\item Why are quick-action tokens signed instead of trusting raw action names?
+\item Why does the send route enqueue work instead of delivering inline?
+\item How does the project distinguish logical attachment records from physical
+\end{enumerate}
+blob storage?
+\begin{enumerate}
+\item Why is escaping email body text in the browser important?
+\item What would break if end-to-end encryption were added without redesigning the
+\end{enumerate}
+smart features?
+\begin{enumerate}
+\item Why is \nolinkurl{mail_items} owner-scoped instead of using a single global message
+\end{enumerate}
+table only?
+\begin{enumerate}
+\item What parts of the system are strongest as an educational prototype, and what
+\end{enumerate}
+parts would need major work for production use?
+
+
+\section{Final Summary}
+
+This codebase implements a complete educational secure email prototype, not just a conceptual design.
+
+At the code level, it demonstrates:
+
+\begin{itemize}
+\item modular architecture
+\item isolated domain configuration
+\item structured data contracts
+\item password hashing
+\item authenticated session handling
+\item post-login request integrity protection
+\item rate limiting and lockout
+\item safe attachment handling and deduplication
+\item mailbox domain logic
+\item cross-domain relay
+\item queue-backed workers
+\item browser and CLI clients
+\item search and lightweight intelligent features
+\item audit logging and alert logging
+\item reproducible tests
+\end{itemize}
+
+At the documentation level, it demonstrates:
+
+\begin{itemize}
+\item protocol clarity
+\item threat modeling
+\item assignment coverage mapping
+\item reproducible testing
+\item bonus-topic reasoning
+\end{itemize}
+
+At the educational level, the strongest lesson is this:
+
+security, concurrency, and usability are easier to explain and verify when the codebase is structured around clear boundaries.
+
+That is exactly what this project tries to show.
+
+\end{document}

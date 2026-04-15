@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Secure Email Console</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260413r">
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Smart Secure Mail</p>
+          <h1>Secure Mail</h1>
+          <p>
+            Use your mailbox directly in the browser to sign in, write mail,
+            search conversations, manage drafts, and review message safety.
+          </p>
+        </div>
+        <div class="hero-card">
+          <div class="status-badge" id="domainBadge">Loading...</div>
+          <div class="status-grid">
+            <div>
+              <span>Service</span>
+              <strong id="serviceStatus">Starting</strong>
+            </div>
+            <div>
+              <span>User</span>
+              <strong id="sessionUser">Guest</strong>
+            </div>
+            <div>
+              <span>Smart</span>
+              <strong id="smartStatus">Checking</strong>
+              <small id="smartStatusDetail" class="status-detail">Waiting for smart-module health.</small>
+            </div>
+          </div>
+          <button type="button" class="ghost-button" id="logoutButton">Log Out</button>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <section class="panel auth-panel">
+          <div class="panel-header">
+            <h2>Access</h2>
+            <p>Each browser window talks to the current domain only.</p>
+          </div>
+          <div class="auth-grid">
+            <form id="registerForm" class="stack-form">
+              <h3>Create Account</h3>
+              <label>Email <input type="email" id="registerEmail" placeholder="alice@a.test" required></label>
+              <label>Password <input type="password" id="registerPassword" placeholder="Choose a password" required></label>
+              <label>Confirm Password <input type="password" id="registerConfirmPassword" placeholder="Repeat your password" required></label>
+              <button type="submit">Create Account</button>
+            </form>
+            <form id="loginForm" class="stack-form">
+              <h3>Sign In</h3>
+              <label>Email <input type="email" id="loginEmail" placeholder="alice@a.test" required></label>
+              <label>Password <input type="password" id="loginPassword" placeholder="Password" required></label>
+              <button type="submit">Sign In</button>
+            </form>
+          </div>
+        </section>
+
+        <section class="panel compose-panel">
+          <div class="panel-header">
+            <h2>New Message</h2>
+            <p>Write a message, save it for later, or add attachments.</p>
+          </div>
+          <form id="composeForm" class="compose-form">
+            <label>To <input type="text" id="composeTo" placeholder="bob@b.test, team@a.test"></label>
+            <label>Cc <input type="text" id="composeCc" placeholder="optional recipients"></label>
+            <div class="compact compose-groups">
+              <h3>Saved Groups</h3>
+              <div class="group-toolbar">
+                <label>
+                  Choose Group
+                  <select id="composeGroupPicker">
+                    <option value="">No saved group selected</option>
+                  </select>
+                </label>
+                <div class="inline-actions">
+                  <button type="button" id="addGroupToToButton" class="secondary-button">Add To To</button>
+                  <button type="button" id="addGroupToCcButton" class="ghost-button">Add To Cc</button>
+                  <button type="button" id="editSelectedGroupButton" class="ghost-button">Edit Group</button>
+                </div>
+              </div>
+              <div class="text-list" id="composeGroupPreview">Choose a saved group to preview and insert its members.</div>
+            </div>
+            <label>Subject <input type="text" id="composeSubject" placeholder="Subject line"></label>
+            <label>Body <textarea id="composeBody" rows="7" placeholder="Write your message"></textarea></label>
+            <section class="compact compose-assist-panel">
+              <div class="compose-assist-header">
+                <div>
+                  <h3>AI Draft Helper</h3>
+                  <p>Use the smart module to draft, continue, or polish this email before sending.</p>
+                </div>
+              </div>
+              <label>
+                What should the assistant help with?
+                <textarea id="composeAssistPrompt" rows="2" placeholder="Write a polite follow-up about the project timeline and ask for feedback."></textarea>
+              </label>
+              <div class="inline-actions">
+                <button type="button" id="composeAssistDraftButton" class="secondary-button">Draft With AI</button>
+                <button type="button" id="composeAssistContinueButton" class="ghost-button">Continue Draft</button>
+                <button type="button" id="composeAssistPolishButton" class="ghost-button">Polish Draft</button>
+                <button type="button" id="composeAssistUndoButton" class="ghost-button" disabled>Undo Last AI Change</button>
+              </div>
+              <div class="text-list" id="composeAssistStatus">The helper can use your prompt plus the current subject and body.</div>
+            </section>
+            <label class="toggle-row">
+              <input type="checkbox" id="composeE2E">
+              <span>End-to-end encrypt this mail with ECC (text-only for now)</span>
+            </label>
+            <div class="compose-toolbar">
+              <label class="file-picker">
+                <span>Choose File</span>
+                <input type="file" id="attachmentFile">
+              </label>
+              <button type="button" id="uploadAttachmentButton" class="secondary-button">Add Attachment</button>
+              <button type="submit">Send</button>
+              <button type="button" id="saveDraftButton" class="secondary-button">Save Draft</button>
+              <button type="button" id="clearComposeButton" class="ghost-button">Clear Form</button>
+            </div>
+            <div class="text-list" id="composeE2EHint">Attachments are disabled when ECC end-to-end encryption is enabled.</div>
+            <div id="selectedAttachmentPreview" class="selected-attachment-preview"></div>
+            <div class="chip-list" id="attachmentList"></div>
+            <section class="compact attachment-library">
+              <div class="attachment-library-header">
+                <div>
+                  <h3>Saved Attachments</h3>
+                  <p>Reuse uploaded files, open them, or delete unused ones.</p>
+                </div>
+                <label>
+                  Find Saved File
+                  <input type="text" id="attachmentLibrarySearch" placeholder="invoice, png, report">
+                </label>
+              </div>
+              <div class="text-list" id="attachmentLibrarySummary">Sign in to manage your saved attachments.</div>
+              <div id="attachmentLibraryList" class="attachment-library-list"></div>
+            </section>
+          </form>
+        </section>
+
+        <section class="panel utility-panel">
+          <div class="panel-header">
+            <h2>Search And Lists</h2>
+            <p>Search your mailbox, refresh the view, and manage recipient lists.</p>
+          </div>
+          <div class="utility-grid">
+            <form id="searchForm" class="stack-form compact">
+              <h3>Search</h3>
+              <label>Query <input type="text" id="searchQuery" placeholder="meeting, bob, invoice"></label>
+              <div class="inline-actions">
+                <button type="submit">Search Mail</button>
+                <button type="button" id="clearSearchButton" class="ghost-button">Clear</button>
+                <button type="button" id="refreshButton" class="secondary-button">Refresh Mail</button>
+              </div>
+              <div id="searchContacts" class="text-list"></div>
+            </form>
+            <form id="groupCreateForm" class="stack-form compact">
+              <h3>Save Or Edit Group</h3>
+              <label>List Name <input type="text" id="groupName" placeholder="project-team"></label>
+              <label>Members <input type="text" id="groupMembers" placeholder="alice@a.test, bob@b.test"></label>
+              <div class="text-list">Saving with the same name updates the existing group.</div>
+              <button type="submit">Save Group</button>
+            </form>
+            <section class="stack-form compact">
+              <h3>Saved Groups</h3>
+              <div id="savedGroupsList" class="group-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="panel mailbox-panel">
+          <div class="panel-header">
+            <h2>Mailbox</h2>
+            <p>Browse received mail, sent mail, drafts, follow-ups, and search results.</p>
+          </div>
+          <div class="tab-row" id="mailboxTabs">
+            <button type="button" data-mailbox="inbox" class="tab-button active">Inbox</button>
+            <button type="button" data-mailbox="sent" class="tab-button">Sent Mail</button>
+            <button type="button" data-mailbox="drafts" class="tab-button">Drafts</button>
+            <button type="button" data-mailbox="calendar" class="tab-button">Calendar</button>
+            <button type="button" data-mailbox="todos" class="tab-button">Follow-Ups</button>
+            <button type="button" data-mailbox="search" class="tab-button">Search Results</button>
+          </div>
+          <div id="mailboxList" class="mail-list"></div>
+        </section>
+
+        <section class="panel detail-panel">
+          <div class="panel-header">
+            <h2>Message View</h2>
+            <p>Read the message, review attachments, and take follow-up actions.</p>
+          </div>
+          <div id="detailView" class="detail-view">
+            <div class="empty-state">
+              <strong>No message selected</strong>
+              <p>Choose a message from the list to open it here.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="imagePreviewModal" class="image-preview-modal" hidden>
+      <div class="image-preview-dialog">
+        <div class="image-preview-toolbar">
+          <strong id="imagePreviewCaption">Attachment Preview</strong>
+          <button type="button" class="ghost-button" id="closeImagePreviewButton">Close</button>
+        </div>
+        <img id="imagePreviewImage" alt="Attachment preview">
+      </div>
+    </div>
+    <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+    <script src="/static/app.js?v=20260413r" defer></script>
+  </body>
+</html>

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+
+
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def utcnow() -> datetime:
@@ -27,8 +31,16 @@ def normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
+def is_valid_email(email: str) -> bool:
+    normalized = normalize_email(email)
+    return bool(EMAIL_PATTERN.fullmatch(normalized))
+
+
 def email_domain(email: str) -> str:
-    return normalize_email(email).rsplit("@", 1)[1]
+    normalized = normalize_email(email)
+    if not is_valid_email(normalized):
+        raise ValueError(f"Invalid email address: {email}")
+    return normalized.rsplit("@", 1)[1]
 
 
 def json_dumps(value: object) -> str:
@@ -38,4 +50,3 @@ def json_dumps(value: object) -> str:
 def ensure_directory(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
-

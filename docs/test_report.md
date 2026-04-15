@@ -36,7 +36,7 @@
 
 ## Execution Notes
 
-Local verification completed in a repo-local virtual environment on 2026-04-12.
+Local verification completed in a repo-local virtual environment on 2026-04-14.
 
 Command used:
 
@@ -47,7 +47,7 @@ Command used:
 Result:
 
 ```text
-20 passed in 14.12s
+45 passed in 29.01s
 ```
 
 Covered by the current automated suite:
@@ -77,6 +77,19 @@ Covered by the current automated suite:
 - tampered quick-action token rejection
 - send rate limiting
 - common-English stopword filtering in keyword extraction
+
+Additional reproducible assignment-sized stress scenarios were executed with:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\generate_stress_results.py
+```
+
+Saved results:
+
+- `100 different users each send 1 mail`: `100/100` accepted and `100/100` delivered
+- `1 user attempts 100 mails`: `30` accepted, `70` rate-limited, service remained healthy
+
+See [docs/stress_test_results.md](./stress_test_results.md) and [docs/stress_test_results.json](./stress_test_results.json) for the full recorded output.
 
 Known gaps still worth extending:
 

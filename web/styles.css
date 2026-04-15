@@ -36,7 +36,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -130,6 +131,14 @@ textarea {
   margin-bottom: 4px;
 }
 
+.status-detail {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
 .dashboard {
   display: grid;
   grid-template-columns: 1.1fr 1.3fr 1fr;
@@ -216,7 +225,8 @@ label {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   border: 1px solid rgba(23, 49, 58, 0.16);
   border-radius: 14px;
@@ -230,7 +240,8 @@ textarea {
 }
 
 input:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
   outline: 2px solid rgba(15, 118, 110, 0.2);
   border-color: var(--accent);
 }
@@ -280,6 +291,72 @@ button:disabled {
 .compose-form {
   display: grid;
   gap: 12px;
+}
+
+.compose-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.compose-assist-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.compose-assist-header h3 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+
+.compose-assist-header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.compose-groups h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.attachment-library {
+  display: grid;
+  gap: 12px;
+}
+
+.attachment-library-header {
+  display: grid;
+  gap: 12px;
+}
+
+.attachment-library-header h3 {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+
+.attachment-library-header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.attachment-library-list {
+  display: grid;
+  gap: 10px;
+}
+
+.attachment-library-list .empty-state {
+  padding: 14px;
+}
+
+.group-toolbar {
+  display: grid;
+  gap: 10px;
+}
+
+.group-list {
+  display: grid;
+  gap: 10px;
 }
 
 .compose-toolbar,
@@ -339,6 +416,77 @@ button:disabled {
 
 .attachment-chip-card .chip {
   width: fit-content;
+}
+
+.selected-attachment-preview {
+  display: grid;
+  gap: 10px;
+}
+
+.attachment-thumb-button {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.attachment-thumb-button:hover {
+  background: transparent;
+  transform: none;
+}
+
+.attachment-thumb {
+  width: min(220px, 100%);
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+  padding: 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+  text-align: center;
+}
+
+.attachment-thumb img {
+  display: block;
+  width: 100%;
+  max-height: 180px;
+  object-fit: cover;
+  border-radius: calc(var(--radius-md) - 4px);
+}
+
+.attachment-thumb.compact {
+  width: 132px;
+  min-height: 94px;
+  padding: 6px;
+}
+
+.attachment-thumb.compact img {
+  max-height: 104px;
+}
+
+.attachment-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.attachment-status {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(23, 49, 58, 0.08);
+  color: var(--muted);
+  font-size: 0.82rem;
+  border: 1px solid var(--line);
 }
 
 .chip button {
@@ -404,6 +552,10 @@ button:disabled {
 .text-list {
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.text-list.is-error {
+  color: var(--danger);
 }
 
 .mail-snippet {
@@ -491,6 +643,50 @@ button:disabled {
   max-width: 100%;
   border-radius: var(--radius-md);
   border: 1px solid var(--line);
+}
+
+.image-preview-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(23, 49, 58, 0.72);
+}
+
+.image-preview-modal[hidden] {
+  display: none;
+}
+
+.image-preview-dialog {
+  width: min(960px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 251, 244, 0.98);
+  box-shadow: var(--shadow);
+}
+
+.image-preview-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.image-preview-dialog img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 140px);
+  margin: 0 auto;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.7);
 }
 
 .security-images {

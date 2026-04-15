@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import io
 import json
 import threading
@@ -61,7 +62,7 @@ def _load_huggingface_pipeline(task: str, model: str, device: str) -> Any:
     if cached is not None:
         return cached
     try:
-        from transformers import pipeline
+        pipeline = importlib.import_module("transformers").pipeline
     except Exception as exc:  # pragma: no cover - depends on optional runtime packages
         raise RuntimeError(
             "transformers is not installed; install secure-email[ml] for local Hugging Face inference."
@@ -328,3 +329,44 @@ def transform_attachment_image(
     analysis["source_transform"] = normalized_mode
     analysis["source_filename"] = filename
     return transformed_name, transformed_bytes, analysis
+
+
+def compress_attachment_image(
+    *,
+    filename: str,
+    content_type: str,
+    data: bytes,
+) -> tuple[str, bytes] | None:
+    source = _load_image(data)
+    try:
+        working = ImageOps.exif_transpose(source)
+        base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+        candidates: list[tuple[str, bytes]] = []
+
+        # Optimized PNG is safest when transparency exists.
+        if "A" in working.getbands():
+            png_buffer = io.BytesIO()
+            working.save(png_buffer, format="PNG", optimize=True, compress_level=9)
+            candidates.append((f"{base_name}-compressed.png", png_buffer.getvalue()))
+
+        rgb = working.convert("RGB")
+        jpeg_buffer = io.BytesIO()
+        try:
+            rgb.save(jpeg_buffer, format="JPEG", quality=72, optimize=True, progressive=True)
+            candidates.append((f"{base_name}-compressed.jpg", jpeg_buffer.getvalue()))
+        except OSError:
+            pass
+
+        if content_type.lower() == "image/png" and "A" not in working.getbands():
+            png_rgb_buffer = io.BytesIO()
+            rgb.save(png_rgb_buffer, format="PNG", optimize=True, compress_level=9)
+            candidates.append((f"{base_name}-compressed.png", png_rgb_buffer.getvalue()))
+
+        if not candidates:
+            return None
+        best_name, best_bytes = min(candidates, key=lambda item: len(item[1]))
+        if len(best_bytes) >= len(data):
+            return None
+        return best_name, best_bytes
+    finally:
+        source.close()

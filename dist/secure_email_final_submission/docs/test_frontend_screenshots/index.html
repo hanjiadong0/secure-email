@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Frontend Test Screenshots</title>
+  <style>
+    body { margin: 0; padding: 28px; font-family: "Segoe UI", system-ui, sans-serif; background: #eff4f9; color: #13283f; }
+    .wrap { max-width: 1100px; margin: 0 auto; }
+    .hero, .card { background: white; border: 1px solid #d9e2eb; border-radius: 24px; box-shadow: 0 12px 36px rgba(15,23,42,0.07); }
+    .hero { padding: 28px 32px; margin-bottom: 24px; }
+    .card { padding: 18px; margin-bottom: 24px; page-break-inside: avoid; }
+    h1 { margin: 0 0 10px; font-size: 34px; }
+    h2 { margin: 6px 6px 16px; font-size: 24px; }
+    p { margin: 0; color: #5f6f82; font-size: 18px; line-height: 1.5; }
+    img { width: 100%; border-radius: 18px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>Frontend Test Screenshots</h1>
+      <p>Browser evidence for secure-email frontend scenarios, captured from live local test runs on 2026-04-13 17:02:14.</p>
+    </section>
+    <section class="card">
+      <h2>Current Runtime Notes</h2>
+      <p>Smart backend during capture: <strong>ollama:llama3.2:latest</strong>.</p>
+      <p>All file types are accepted as attachments. Image AI and transform actions are applied only to image attachments.</p>
+    </section>
+    <section class="card"><h2>1. Live Mail Console</h2><p>Signed-in browser frontend with smart status, AI drafting, saved groups, and saved attachments visible together.</p><img src="01_main_console_real.png" alt="1. Live Mail Console"></section>
+<section class="card"><h2>2. Cross-Domain Delivery</h2><p>Recipient inbox on b.test after a real browser-driven send from a.test.</p><img src="02_cross_domain_delivery_real.png" alt="2. Cross-Domain Delivery"></section>
+<section class="card"><h2>3. Concurrency and Stability</h2><p>One mailbox receiving a burst from multiple different senders without the service crashing.</p><img src="03_concurrency_stability_real.png" alt="3. Concurrency and Stability"></section>
+<section class="card"><h2>4. Brute-Force Protection</h2><p>The login flow shows the real temporary lockout after repeated failed password attempts.</p><img src="04_bruteforce_lockout_real.png" alt="4. Brute-Force Protection"></section>
+<section class="card"><h2>5. High-Frequency Send Limit</h2><p>The browser shows the real abuse-control response after repeated rapid sends.</p><img src="05_send_rate_limit_real.png" alt="5. High-Frequency Send Limit"></section>
+<section class="card"><h2>6. Phishing Detection</h2><p>Suspicious content is opened in the real inbox with the smart review and warning context visible.</p><img src="06_phishing_detection_real.png" alt="6. Phishing Detection"></section>
+<section class="card"><h2>7. Attachment Management</h2><p>Saved attachments, thumbnails, compression, and reuse controls shown in the current compose workflow.</p><img src="07_attachment_management_real.png" alt="7. Attachment Management"></section>
+<section class="card"><h2>8. Attachment Send and Preview</h2><p>Receiver-side detail view with a real image attachment preview opened from the mailbox.</p><img src="08_attachment_send_receive_real.png" alt="8. Attachment Send and Preview"></section>
+<section class="card"><h2>9. Independent Security Lab</h2><p>Separate attacker-versus-defender website with fresh threat-drill evidence and explanations.</p><img src="09_security_lab_real.png" alt="9. Independent Security Lab"></section>
+<section class="card"><h2>10. Dedup Upload View</h2><p>Two logical uploads are visible in the frontend while the backend still performs blob deduplication.</p><img src="10_storage_dedup_frontend_real.png" alt="10. Dedup Upload View"></section>
+<section class="card"><h2>11. Dedup Backend Evidence</h2><p>Browser-rendered evidence page proving that duplicate uploads collapse to one stored blob.</p><img src="11_storage_dedup_backend_web.png" alt="11. Dedup Backend Evidence"></section>
+  </div>
+</body>
+</html>

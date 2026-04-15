@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import traceback
 from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
 
 from common.config import DomainConfig
-from server import attachments, auth, e2e_keys, mailbox, relay, security, web
+from server import attachments, auth, e2e_keys, mailbox, relay, security, smart_routes, web
+from server.smart import smart_backend_status
 from server.storage import AppContext, RelayDispatch
 from server.workers import start_workers, stop_workers
 
@@ -28,7 +30,29 @@ def create_app(config: DomainConfig, relay_dispatch: RelayDispatch | None = None
 
     @app.middleware("http")
     async def apply_security_headers(request, call_next):
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            trace = traceback.format_exc(limit=20)
+            ctx.audit(
+                "unhandled_exception",
+                details={
+                    "path": request.url.path,
+                    "method": request.method,
+                    "error": str(exc)[:300],
+                    "traceback": trace[-4000:],
+                },
+            )
+            ctx.alert(
+                "unhandled_exception",
+                severity="high",
+                details={
+                    "path": request.url.path,
+                    "method": request.method,
+                    "error": str(exc)[:300],
+                },
+            )
+            raise
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
@@ -40,8 +64,15 @@ def create_app(config: DomainConfig, relay_dispatch: RelayDispatch | None = None
         return response
 
     @app.get("/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok", "domain": config.domain}
+    def health() -> dict[str, object]:
+        return {
+            "status": "ok",
+            "domain": config.domain,
+            "smart": smart_backend_status(
+                config,
+                ctx.get_secret("openai_api_key") or ctx.config.openai_api_key,
+            ),
+        }
 
     auth.register_routes(app, ctx)
     e2e_keys.register_routes(app, ctx)
@@ -49,6 +80,7 @@ def create_app(config: DomainConfig, relay_dispatch: RelayDispatch | None = None
     mailbox.register_routes(app, ctx)
     relay.register_routes(app, ctx)
     security.register_routes(app, ctx)
+    smart_routes.register_routes(app, ctx)
     web.register_routes(app, config)
     return app
 

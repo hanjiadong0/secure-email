@@ -1,0 +1,392 @@
+{
+  "status": "ok",
+  "generated_at": "2026-04-13T15:50:29+00:00",
+  "metrics": {
+    "total_attempts": 19,
+    "blocked": 9,
+    "detected": 7,
+    "attacker_success": 1,
+    "defender_success_rate_percent": 84
+  },
+  "overview": {
+    "posture": "mixed",
+    "summary": "The security drill uses the live protocol surface of the project and checks whether protective controls slow, reject, or visibly surface attacker behavior.",
+    "defender_success_rate_percent": 84,
+    "strongest_control_area": "Brute-force login",
+    "highest_residual_risk": "LLM prompt-injection pressure"
+  },
+  "methodology": [
+    "Spin up two isolated local domains with separate data roots and peer relay links.",
+    "Drive the same public HTTP interfaces that a normal client would use instead of calling internal functions directly.",
+    "Run named attacker playbooks across authentication, request integrity, relay trust, attachment handling, and smart-assistant boundaries.",
+    "Measure both attacker-side progress and defender-side controls such as lockout, throttling, replay rejection, relay rejection, and content warning signals.",
+    "Save evidence as structured JSON plus PNG summaries so the result can be reviewed outside the mail UI."
+  ],
+  "threat_model": {
+    "assets": [
+      "user credentials",
+      "authenticated session integrity",
+      "mail delivery availability",
+      "attachment handling safety",
+      "recipient trust in message content",
+      "smart-compose confidentiality and prompt isolation"
+    ],
+    "trust_boundaries": [
+      "browser-to-domain API boundary",
+      "cross-domain relay boundary",
+      "encrypted-at-rest mailbox and attachment storage boundary",
+      "incoming mail content to smart/LLM boundary"
+    ],
+    "attacker_profiles": [
+      "External anonymous internet attacker",
+      "Active network attacker / replay attacker",
+      "Authenticated malicious user",
+      "Mail content attacker / phishing attacker",
+      "AI / LLM-specific attacker",
+      "Attachment attacker",
+      "Compromised peer server"
+    ],
+    "priority_attackers": [
+      "Authenticated malicious user",
+      "Active network attacker / replay attacker",
+      "Compromised peer server",
+      "Attachment attacker",
+      "AI / LLM-specific attacker"
+    ],
+    "llm_risks": [
+      "prompt injection from incoming mail",
+      "cross-message or cross-user context bleed",
+      "unsafe reply suggestions or overconfident summaries",
+      "privacy leakage through prompts, logs, or backend routing",
+      "expensive smart-path abuse that degrades availability"
+    ],
+    "attacker_layers": [
+      "unauthenticated outsider",
+      "authenticated malicious user",
+      "compromised peer server",
+      "attachment attacker",
+      "AI prompt attacker"
+    ]
+  },
+  "scenarios": [
+    {
+      "scenario_id": "brute_force_login",
+      "scenario": "Brute-force login",
+      "category": "Authentication",
+      "severity": "high",
+      "attacker_name": "External brute-force operator",
+      "attacker_class": "External anonymous internet attacker",
+      "attacker_script": "login_bruteforce_playbook",
+      "trust_boundary": "Internet -> authentication API",
+      "security_objectives": [
+        "Confidentiality",
+        "Authorization",
+        "Availability"
+      ],
+      "entry_points": [
+        "/v1/auth/login"
+      ],
+      "attacker_goal": "Guess a mailbox password by repeatedly submitting wrong credentials.",
+      "attack_path": [
+        "Target a known account on one domain.",
+        "Send repeated password guesses through the real login endpoint.",
+        "Continue until either the account is locked or the attacker gets through."
+      ],
+      "defender_controls": [
+        "Per-account failed-login counting",
+        "Temporary lockout with Retry-After guidance",
+        "Security logging for repeated bad-password bursts"
+      ],
+      "evidence": [
+        "The simulation sent 5 bad-password attempts to victim-lock@sim-a.test.",
+        "The server returned lockout responses 3 time(s)."
+      ],
+      "outcome": "Attempts=5, blocked=3, detected=1, attacker_success=0.",
+      "result_label": "Defender held",
+      "explanation": "The lockout logic changes this from an unlimited guessing game into a time-bounded attack. That directly slows brute-force pressure and makes repeated login abuse visible.",
+      "residual_risk": "A distributed attacker can still rotate IPs or spread guesses across many accounts, so this control should stay paired with alerting and stronger risk scoring.",
+      "attempts": 5,
+      "blocked": 3,
+      "detected": 1,
+      "attacker_success": 0,
+      "notes": "Account lockout and Retry-After response should trigger."
+    },
+    {
+      "scenario_id": "request_replay",
+      "scenario": "Replay attack",
+      "category": "Request integrity",
+      "severity": "high",
+      "attacker_name": "Captured-request replayer",
+      "attacker_class": "Active network attacker / replay attacker",
+      "attacker_script": "signed_request_replay_playbook",
+      "trust_boundary": "Client -> authenticated request layer",
+      "security_objectives": [
+        "Integrity",
+        "Authorization"
+      ],
+      "entry_points": [
+        "/v1/groups/create",
+        "/v1/mail/send",
+        "/v1/security/simulate"
+      ],
+      "attacker_goal": "Reuse a previously valid signed request to repeat a privileged action.",
+      "attack_path": [
+        "Capture one legitimate signed POST request.",
+        "Resend the exact same body, nonce, request id, and MAC.",
+        "Check whether the server accepts the duplicate action."
+      ],
+      "defender_controls": [
+        "Nonce tracking",
+        "Session sequence numbers",
+        "Signed request MAC verification"
+      ],
+      "evidence": [
+        "The first request returned 200.",
+        "The replayed request returned 409."
+      ],
+      "outcome": "Attempts=1, blocked=1, detected=1, attacker_success=0.",
+      "result_label": "Defender held",
+      "explanation": "The server rejects the duplicate request instead of treating a copied packet as fresh authority. That protects security-sensitive endpoints such as group updates, send actions, and quick-action execution.",
+      "residual_risk": "Replay protection depends on time windows, nonce storage, and session-state consistency, so it must remain enabled on every authenticated write path.",
+      "attempts": 1,
+      "blocked": 1,
+      "detected": 1,
+      "attacker_success": 0,
+      "notes": "Initial=200, replay=409."
+    },
+    {
+      "scenario_id": "mail_flood_rate_limit",
+      "scenario": "Authenticated mail flood / rate limit",
+      "category": "Availability",
+      "severity": "high",
+      "attacker_name": "Authenticated abusive sender",
+      "attacker_class": "Authenticated malicious user",
+      "attacker_script": "burst_send_abuse_playbook",
+      "trust_boundary": "Authenticated mailbox user -> mail send pipeline",
+      "security_objectives": [
+        "Availability",
+        "Authorization"
+      ],
+      "entry_points": [
+        "/v1/mail/send",
+        "/v1/mail/send_group"
+      ],
+      "attacker_goal": "Overwhelm recipients or server queues by sending mail at burst speed.",
+      "attack_path": [
+        "Authenticate once as a sender.",
+        "Submit multiple send requests in a tight loop.",
+        "Measure how many requests the server accepts before throttling."
+      ],
+      "defender_controls": [
+        "Per-user send-rate limits",
+        "Client-side action cooldowns",
+        "Queued delivery instead of unbounded inline processing"
+      ],
+      "evidence": [
+        "Burst attempts sent: 6.",
+        "Accepted before throttling: 3.",
+        "Rate-limited responses: 3."
+      ],
+      "outcome": "Attempts=6, blocked=3, detected=1, attacker_success=0.",
+      "result_label": "Defender held",
+      "explanation": "The server allows normal mail flow up to the configured ceiling, then starts rejecting burst traffic. That keeps abusive senders from using the standard UI or API as an unlimited broadcast cannon.",
+      "residual_risk": "An attacker with many accounts can still distribute abuse across identities, so rate limiting should be paired with anomaly detection, IP heuristics, and administrative review.",
+      "attempts": 6,
+      "blocked": 3,
+      "detected": 1,
+      "attacker_success": 0,
+      "notes": "Server-side send throttling should block burst traffic."
+    },
+    {
+      "scenario_id": "phishing_detection",
+      "scenario": "Phishing signal detection",
+      "category": "Content trust",
+      "severity": "high",
+      "attacker_name": "Credential-harvesting phisher",
+      "attacker_class": "Mail content attacker / phishing attacker",
+      "attacker_script": "credential_reset_phish_playbook",
+      "trust_boundary": "Incoming mail content -> recipient trust",
+      "security_objectives": [
+        "Confidentiality",
+        "Integrity"
+      ],
+      "entry_points": [
+        "/v1/mail/send"
+      ],
+      "attacker_goal": "Convince a recipient to trust a malicious credential-reset message.",
+      "attack_path": [
+        "Send a mail with urgent wording, credential prompts, and multiple suspicious links.",
+        "Deliver it through the normal cross-domain mail path.",
+        "Inspect the receiver mailbox metadata for phishing flags and suspicious classification."
+      ],
+      "defender_controls": [
+        "Heuristic phishing-language scoring",
+        "Suspicious-message classification",
+        "Recipient-visible warning labels in the mailbox"
+      ],
+      "evidence": [
+        "Phishing message delivered with message id d251940c-58cd-4e39-a3d4-ae47318c0ef9.",
+        "Receiver suspicious flag: True."
+      ],
+      "outcome": "Attempts=1, blocked=0, detected=1, attacker_success=0.",
+      "result_label": "Defender held",
+      "explanation": "This drill checks whether dangerous wording is only delivered or also interpreted. A flagged result means the user-facing mailbox is not silently treating a risky message as normal business mail.",
+      "residual_risk": "Heuristics can miss novel phishing phrasing and can also over-flag benign mail, so this layer should keep evolving with model-based and human-in-the-loop review.",
+      "attempts": 1,
+      "blocked": 0,
+      "detected": 1,
+      "attacker_success": 0,
+      "notes": "Suspicious language and links should be flagged."
+    },
+    {
+      "scenario_id": "llm_prompt_injection",
+      "scenario": "LLM prompt-injection pressure",
+      "category": "Smart module",
+      "severity": "high",
+      "attacker_name": "Prompt-injection phisher",
+      "attacker_class": "AI / LLM-specific attacker",
+      "attacker_script": "prompt_injection_mail_playbook",
+      "trust_boundary": "Incoming mail content -> smart review and compose assistant",
+      "security_objectives": [
+        "Confidentiality",
+        "Integrity",
+        "Authorization"
+      ],
+      "entry_points": [
+        "/v1/mail/send",
+        "/v1/smart/compose"
+      ],
+      "attacker_goal": "Poison smart review or draft assistance through attacker-controlled email text.",
+      "attack_path": [
+        "Deliver a normal-looking email that contains explicit prompt-injection instructions.",
+        "Wait for the receiver mailbox to classify and summarize that message.",
+        "Open the compose-assist path with the malicious message as reply context."
+      ],
+      "defender_controls": [
+        "Prompt templates that treat mail content as untrusted text",
+        "Prompt-injection heuristics inside suspicious-mail detection",
+        "Advisory-only smart assistance with normal server-side action validation"
+      ],
+      "evidence": [
+        "Prompt-injection message delivered with message id 6b86ca5c-fe0e-43ec-a25f-1b4cd8f6ee31.",
+        "Receiver suspicious flag: True.",
+        "Receiver reasons: urgent_or_credentials_language, multiple_links, action_request_language, prompt_or_script_injection_language.",
+        "Quick replies stayed safe: True.",
+        "Compose reply backend: heuristic, context_used=True, safe_output=False."
+      ],
+      "outcome": "Attempts=3, blocked=0, detected=1, attacker_success=1.",
+      "result_label": "Partially contained",
+      "explanation": "This drill checks the LLM-specific boundary directly. The attacker controls the incoming email text, but the smart stack should treat that text as hostile input, flag it as suspicious, and still produce a normal reply draft instead of following the injected instructions.",
+      "residual_risk": "Prompt isolation lowers risk but does not eliminate it. Future hardening should keep adding adversarial regression tests, tighter context scoping, and audit events around smart-module failures or fallback behavior.",
+      "attempts": 3,
+      "blocked": 0,
+      "detected": 1,
+      "attacker_success": 1,
+      "notes": "Mailbox warning plus safe smart-compose output are both expected."
+    },
+    {
+      "scenario_id": "attachment_guard",
+      "scenario": "Malicious attachment handling",
+      "category": "Attachment processing",
+      "severity": "medium",
+      "attacker_name": "Malicious attachment sender",
+      "attacker_class": "Attachment attacker",
+      "attacker_script": "fake_image_transform_playbook",
+      "trust_boundary": "Attachment upload -> image-only AI and transform path",
+      "security_objectives": [
+        "Integrity",
+        "Availability"
+      ],
+      "entry_points": [
+        "/v1/attachments/upload",
+        "/v1/attachments/{id}/transform"
+      ],
+      "attacker_goal": "Smuggle a fake image through the attachment path and trigger unsafe image processing.",
+      "attack_path": [
+        "Upload a file named like an image but containing invalid bytes.",
+        "Attempt an image-only transform on that non-image file.",
+        "Observe whether attachment analysis and transform gates reject unsafe assumptions."
+      ],
+      "defender_controls": [
+        "Content-type detection based on bytes, not just extension",
+        "Image transform restricted to verified image types",
+        "Attachment analysis metadata for preview readiness"
+      ],
+      "evidence": [
+        "Upload status: 200.",
+        "Image transform status on fake image: 400."
+      ],
+      "outcome": "Attempts=2, blocked=1, detected=1, attacker_success=0.",
+      "result_label": "Defender held",
+      "explanation": "The attachment pipeline still allows generic file storage, but image-only AI processing is fenced behind byte-level validation. That is the important security boundary in this drill.",
+      "residual_risk": "This scenario focuses on transform safety, not full malware analysis. A production system would still need content scanning, sandboxing, and stricter file-disposition policies.",
+      "attempts": 2,
+      "blocked": 1,
+      "detected": 1,
+      "attacker_success": 0,
+      "notes": "Any file type can upload, but image-only transform on non-image should be rejected."
+    },
+    {
+      "scenario_id": "rogue_peer_server",
+      "scenario": "Rogue peer relay submission",
+      "category": "Relay trust",
+      "severity": "high",
+      "attacker_name": "Compromised peer relay",
+      "attacker_class": "Compromised peer server",
+      "attacker_script": "forged_relay_submission_playbook",
+      "trust_boundary": "Peer domain -> relay endpoint",
+      "security_objectives": [
+        "Integrity",
+        "Authorization",
+        "Availability"
+      ],
+      "entry_points": [
+        "/v1/relay/incoming",
+        "/v1/relay/recall"
+      ],
+      "attacker_goal": "Forge cross-domain delivery by pretending to be a trusted peer server.",
+      "attack_path": [
+        "Craft a relay payload that looks structurally valid.",
+        "Claim a trusted source domain while signing with the wrong relay secret.",
+        "Check whether the target domain accepts the forged delivery into a real inbox."
+      ],
+      "defender_controls": [
+        "Relay MAC verification",
+        "Trusted-peer domain allowlist",
+        "Relay nonce and timestamp validation"
+      ],
+      "evidence": [
+        "Forged relay response status: 401.",
+        "Forged message inserted into inbox: False."
+      ],
+      "outcome": "Attempts=1, blocked=1, detected=1, attacker_success=0.",
+      "result_label": "Defender held",
+      "explanation": "The target domain should treat the peer server as a separate trust boundary. A structurally valid payload is not enough; the relay must also prove possession of the shared relay secret and stay inside the replay window.",
+      "residual_risk": "A fully compromised trusted peer can still send authenticated but malicious content. Relay authentication protects against forgery, but content abuse still needs phishing detection, rate limiting, and operator visibility.",
+      "attempts": 1,
+      "blocked": 1,
+      "detected": 1,
+      "attacker_success": 0,
+      "notes": "Forged relay traffic should fail before inbox insertion."
+    }
+  ],
+  "recommendations": [
+    "Keep TLS enabled in production configs and disable HTTP fallback outside local demos.",
+    "Rotate action/relay/data-encryption secrets periodically and keep them outside static config files.",
+    "Forward alerts.jsonl into centralized monitoring with paging for high-severity replay or MAC failures.",
+    "Add account recovery and admin incident response flow for repeated login lockouts from shared source IPs.",
+    "Extend phishing model coverage with local HF text classifier and periodic adversarial prompt tests.",
+    "Add smart-module regression tests that verify prompt injection cannot leak hidden context or override guarded instructions.",
+    "Tighten thresholds in the scenarios where attacker success remains non-zero."
+  ],
+  "images": {
+    "attacker_vs_defender": {
+      "name": "attacker_vs_defender.png",
+      "url": "/v1/security/evidence/attacker_vs_defender.png"
+    },
+    "scenario_matrix": {
+      "name": "scenario_matrix.png",
+      "url": "/v1/security/evidence/scenario_matrix.png"
+    }
+  }
+}

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Security Lab</title>
+    <link rel="stylesheet" href="/static/security-lab.css?v=20260413a">
+  </head>
+  <body>
+    <div class="lab-shell">
+      <header class="lab-hero">
+        <div>
+          <p class="eyebrow">Independent Threat Modeling Site</p>
+          <h1>Security Lab</h1>
+          <p class="hero-copy">
+            This page is separate from the mailbox UI. It runs attacker-versus-defender drills,
+            explains what each attacker tried, which controls responded, and what residual risk remains.
+          </p>
+        </div>
+        <aside class="hero-panel">
+          <div class="status-chip" id="labDomain">Loading domain...</div>
+          <div class="status-grid">
+            <div>
+              <span>Operator</span>
+              <strong id="labOperator">Guest</strong>
+            </div>
+            <div>
+              <span>Access</span>
+              <strong id="labAccess">Read-only</strong>
+            </div>
+          </div>
+          <a href="/" class="ghost-link">Open Mail UI</a>
+        </aside>
+      </header>
+
+      <main class="lab-grid">
+        <section class="panel access-panel">
+          <div class="panel-header">
+            <h2>Lab Access</h2>
+            <p>Reading evidence is public. Running a fresh drill uses a normal domain account.</p>
+          </div>
+          <form id="labLoginForm" class="stack-form">
+            <label>Email <input type="email" id="labEmail" placeholder="alice@a.test"></label>
+            <label>Password <input type="password" id="labPassword" placeholder="Password"></label>
+            <div class="inline-actions">
+              <button type="submit">Sign In</button>
+              <button type="button" id="labLogoutButton" class="ghost-button">Log Out</button>
+            </div>
+          </form>
+          <div class="inline-actions">
+            <button type="button" id="labRunButton" class="accent-button">Run Threat Drill</button>
+            <button type="button" id="labRefreshButton" class="secondary-button">Refresh Evidence</button>
+          </div>
+          <div class="text-block" id="labAccessHint">
+            Sign in to rerun the drill. The simulation itself is independent from the mailbox website and uses temporary isolated domains.
+          </div>
+        </section>
+
+        <section class="panel overview-panel">
+          <div class="panel-header">
+            <h2>Overview</h2>
+            <p id="overviewSummary">Loading the latest security evidence...</p>
+          </div>
+          <div id="overviewCards" class="metric-grid"></div>
+        </section>
+
+        <section class="panel model-panel">
+          <div class="panel-header">
+            <h2>Threat Model</h2>
+            <p>The lab frames what is being protected before discussing outcomes.</p>
+          </div>
+          <div id="threatModel" class="triple-grid"></div>
+        </section>
+
+        <section class="panel methodology-panel">
+          <div class="panel-header">
+            <h2>Methodology</h2>
+            <p>Each drill uses the live protocol surface instead of mock answers.</p>
+          </div>
+          <div id="methodologyList" class="list-stack"></div>
+        </section>
+
+        <section class="panel chart-panel">
+          <div class="panel-header">
+            <h2>Evidence Charts</h2>
+            <p>Charts show the quantitative side. Scenario cards below explain what those numbers mean.</p>
+          </div>
+          <div class="chart-grid">
+            <article class="chart-card">
+              <strong>Attacker vs Defender</strong>
+              <img id="attackerChart" alt="Attacker versus defender chart">
+            </article>
+            <article class="chart-card">
+              <strong>Scenario Matrix</strong>
+              <img id="matrixChart" alt="Scenario matrix chart">
+            </article>
+          </div>
+        </section>
+
+        <section class="panel scenario-panel">
+          <div class="panel-header">
+            <h2>Scenario Explanations</h2>
+            <p>Each card explains the attack path, the defensive response, and the remaining exposure.</p>
+          </div>
+          <div id="scenarioCards" class="scenario-grid"></div>
+        </section>
+
+        <section class="panel recommendations-panel">
+          <div class="panel-header">
+            <h2>Hardening Priorities</h2>
+            <p>These recommendations are generated from the current drill results.</p>
+          </div>
+          <div id="recommendationList" class="list-stack"></div>
+        </section>
+      </main>
+    </div>
+
+    <div id="labToastRegion" class="toast-region" aria-live="polite"></div>
+    <script src="/static/security-lab.js?v=20260413a" defer></script>
+  </body>
+</html>

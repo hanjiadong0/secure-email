@@ -1,0 +1,66 @@
+{
+  "generated_at": "2026-04-13T17:02:14",
+  "smart_runtime": {
+    "smart_backend": "ollama",
+    "ollama_base_url": "http://127.0.0.1:11434",
+    "ollama_model": "llama3.2:latest",
+    "ollama_timeout_seconds": "20.0"
+  },
+  "screenshots": [
+    {
+      "filename": "01_main_console_real.png",
+      "title": "1. Live Mail Console",
+      "description": "Signed-in browser frontend with smart status, AI drafting, saved groups, and saved attachments visible together."
+    },
+    {
+      "filename": "02_cross_domain_delivery_real.png",
+      "title": "2. Cross-Domain Delivery",
+      "description": "Recipient inbox on b.test after a real browser-driven send from a.test."
+    },
+    {
+      "filename": "03_concurrency_stability_real.png",
+      "title": "3. Concurrency and Stability",
+      "description": "One mailbox receiving a burst from multiple different senders without the service crashing."
+    },
+    {
+      "filename": "04_bruteforce_lockout_real.png",
+      "title": "4. Brute-Force Protection",
+      "description": "The login flow shows the real temporary lockout after repeated failed password attempts."
+    },
+    {
+      "filename": "05_send_rate_limit_real.png",
+      "title": "5. High-Frequency Send Limit",
+      "description": "The browser shows the real abuse-control response after repeated rapid sends."
+    },
+    {
+      "filename": "06_phishing_detection_real.png",
+      "title": "6. Phishing Detection",
+      "description": "Suspicious content is opened in the real inbox with the smart review and warning context visible."
+    },
+    {
+      "filename": "07_attachment_management_real.png",
+      "title": "7. Attachment Management",
+      "description": "Saved attachments, thumbnails, compression, and reuse controls shown in the current compose workflow."
+    },
+    {
+      "filename": "08_attachment_send_receive_real.png",
+      "title": "8. Attachment Send and Preview",
+      "description": "Receiver-side detail view with a real image attachment preview opened from the mailbox."
+    },
+    {
+      "filename": "09_security_lab_real.png",
+      "title": "9. Independent Security Lab",
+      "description": "Separate attacker-versus-defender website with fresh threat-drill evidence and explanations."
+    },
+    {
+      "filename": "10_storage_dedup_frontend_real.png",
+      "title": "10. Dedup Upload View",
+      "description": "Two logical uploads are visible in the frontend while the backend still performs blob deduplication."
+    },
+    {
+      "filename": "11_storage_dedup_backend_web.png",
+      "title": "11. Dedup Backend Evidence",
+      "description": "Browser-rendered evidence page proving that duplicate uploads collapse to one stored blob."
+    }
+  ]
+}
